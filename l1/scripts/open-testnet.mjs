@@ -593,8 +593,17 @@ export function faucetOriginAllowed(origin, allowed) {
 // writeJson merges CORS first; a faucet response replaces it with these.
 function withoutCors(extra) { return { "access-control-allow-origin": undefined, "access-control-allow-methods": undefined, "access-control-allow-headers": undefined, "access-control-max-age": undefined, ...extra }; }
 export const FAUCET_UNAVAILABLE_MESSAGE = "faucet temporarily unavailable, retry later";
-// POST /faucet. Rate limits run before the body is read. Errors are generic;
-// the details (node error text included) go to the server log only.
+// POST /faucet. Errors are generic; the details (node error text included) go
+// to the server log only. Quota order (#1210 R3-3, #1213-4/-5):
+// - faucetAttempt (60s, per IP, counts every attempt) and a read-only
+//   faucetIp.peek run before the body is read, so an IP cannot hold many slow
+//   bodies open and an exhausted IP is refused without reading its body;
+// - after the body validates, faucetIp, faucetAddress and faucetGlobal are all
+//   peeked, then all taken with no await in between, so a refusal by any of
+//   them spends none of the others;
+// - protocol-reserved receivers get a 400 before any of them is taken;
+// - if the send fails BEFORE POST /tx is sent (error.preSubmit), all three
+//   are refunded; a node rejection, 5xx or timeout is never refunded.
 export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody, send, log = (line) => console.error(line), durabilityView = async () => ({}) }) {
   return async (request, response, ip) => {
     const cors = withoutCors(faucetCorsHeaders(request.headers.origin, origins));
@@ -612,16 +621,35 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
     const contentType = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
     if (contentType !== "application/json") return reply(415, { error: "content-type must be application/json" });
     try {
-      const ipRate = limits.faucetIp.take(ip);
-      if (!ipRate.allowed) return limited(ipRate);
+      if (limits.faucetAttempt) {
+        const attempt = limits.faucetAttempt.take(ip);
+        if (!attempt.allowed) return limited(attempt);
+      }
+      const exhausted = peekLimit(limits.faucetIp, ip);
+      if (!exhausted.allowed) return limited(exhausted);
       const body = await readJsonBody(request);
       const address = body && typeof body === "object" ? body.address : undefined;
       if (typeof address !== "string" || !ADDRESS_PATTERN.test(address) || address === faucetAddress) return reply(400, { error: "body must be {\"address\":\"ZYN...\"}" });
-      const addressRate = limits.faucetAddress.take(address);
-      if (!addressRate.allowed) return limited(addressRate);
-      const globalRate = limits.faucetGlobal.take("global");
-      if (!globalRate.allowed) return limited(globalRate);
-      const result = await send(address);
+      // Protocol-reserved receivers are rejected by every node; refuse them
+      // here, before any quota is taken or a transfer is built (#1213-6).
+      if (FAUCET_RESERVED_RECEIVERS.has(address)) return reply(400, { error: "address is protocol-reserved" });
+      const spends = [[limits.faucetIp, ip], [limits.faucetAddress, address], [limits.faucetGlobal, "global"]];
+      for (const [limiter, key] of spends) {
+        const rate = peekLimit(limiter, key);
+        if (!rate.allowed) return limited(rate);
+      }
+      // No await between the peeks above and these takes.
+      const taken = [];
+      for (const [limiter, key] of spends) {
+        const rate = typeof limiter.takeWithReceipt === "function" ? limiter.takeWithReceipt(key) : limiter.take(key);
+        if (!rate.allowed) { refundAll(taken); return limited(rate); }
+        taken.push([limiter, rate.receipt]);
+      }
+      let result;
+      // Refund only when the send failed before POST /tx left the gateway
+      // (fee floor, chain status or nonce lookup): a node rejection, a 5xx or
+      // a timeout may already be a drip, and is attacker-triggerable (#1213-6).
+      try { result = await send(address); } catch (error) { if (error?.preSubmit === true) refundAll(taken); throw error; }
       // The transfer is already queued: a failed durability lookup must not turn it into an error.
       const durability = await durabilityView().catch(() => ({}));
       return reply(200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds).", ...durability });
@@ -638,6 +666,48 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
     }
   };
 }
+// Receivers every node rejects (mirrors l1/src: MINING_TRACKER_ADDRESS in
+// mining.ts, ACTIVITY_WINDOW_TIME_ADDRESS / ACTIVITY_WINDOW_AMOUNT_ADDRESS in
+// activity.ts; a test keeps them in sync). They pass ADDRESS_PATTERN.
+export const FAUCET_RESERVED_RECEIVERS = new Set([`ZYN${"0".repeat(40)}`, `ZYN${"0".repeat(39)}1`, `ZYN${"0".repeat(39)}2`]);
+// Marks a faucet send failure that happened before POST /tx was sent, so the
+// route may refund the quotas it took.
+export function markFaucetPreSubmit(error) {
+  const marked = error instanceof Error ? error : new Error(String(error));
+  marked.preSubmit = true;
+  return marked;
+}
+// Serialized faucet drips. Every step before POST /tx (chain status, fee
+// floor, nonce lookup, building the transfer) throws with preSubmit=true; the
+// POST /tx call and anything after it never does.
+export function createFaucetSend({ chainStatus, anyNode, chainId, faucet, nonceTracker = createFaucetNonceTracker(), buildTransfer = createTransfer, transferFeeAtoms = (statusResponse) => faucetTransferFeeAtoms(NODE_TRANSFER_FEE_ATOMS, statusResponse), dripAtoms = FAUCET_DRIP_ATOMS, now = Date.now }) {
+  let queue = Promise.resolve();
+  return function faucetSend(receiver) {
+    const run = queue.then(async () => {
+      let tx; let nonce;
+      try {
+        const status = await chainStatus();
+        // Fresh (uncached) read of the node floor; throws FaucetFeeFloorError.
+        const feeAtoms = transferFeeAtoms(await anyNode("/status"));
+        const nonceResponse = await anyNode(`/nonce/${faucet.address}`);
+        if (nonceResponse.status !== 200) throw new Error(`faucet nonce lookup failed (status ${nonceResponse.status})`);
+        // Chain state wins after a restore or a rejected drip (Red Team INFO #9).
+        nonce = nonceTracker.next(nonceResponse.body.nonce, now());
+        tx = buildTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: dripAtoms, feeAtoms, timestampMs: now() },
+          faucet.privateKey, faucet.publicKey, status.transactionVersion);
+      } catch (error) { throw markFaucetPreSubmit(error); }
+      const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
+      // The node's error text is logged by the faucet route, never returned.
+      if (submitted.status < 200 || submitted.status > 299) { nonceTracker.rejected(nonce, { status: submitted.status, error: submitted.body?.error }, now()); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
+      nonceTracker.accepted(nonce, now());
+      return { txid: tx.txid, receiver, amountAtoms: dripAtoms, nonce };
+    });
+    queue = run.catch(() => undefined);
+    return run;
+  };
+}
+function peekLimit(limiter, key) { return typeof limiter.peek === "function" ? limiter.peek(key, Date.now(), { record: true }) : { allowed: true }; }
+function refundAll(taken) { for (const [limiter, receipt] of taken) if (receipt && typeof limiter.refund === "function") limiter.refund(receipt); }
 const FAUCET_REQUEST_ERRORS = new Set(["content-type must be application/json", "request body too large", "invalid JSON"]);
 const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
 function writeJson(response, code, body, extra = {}) {
@@ -913,16 +983,21 @@ export function rateLimiterMaxKeys(env = process.env) {
 // at 10k a key spray could fill the table for a whole day and lock out every
 // new faucet user, whereas short-window tables recover within a minute.
 export const DAY_WINDOW_LIMITER_MAX_KEYS = 50_000;
-// Per-IPv6-/48 live-key cap for the 60-second tables. One /48 holds 65,536
-// /64 buckets; without a sub-cap a single allocation can fill the whole table.
-// Faucet day-window tables leave this at 0 (out of scope for this change).
+// Per-IPv6-/48 live-key cap. One /48 holds 65,536 /64 buckets; without a
+// sub-cap a single allocation can fill the whole table. Used by the 60-second
+// tables (read/write/relayIp) and by faucetIp (#1210 R3-3).
 export const RATE_LIMITER_PREFIX_CAP_DEFAULT = 256;
+// Fill alert (#1210 R2-3): one log line when a table first reaches 80% of
+// maxKeys and one when it is full; re-armed once it drops below 70%.
+export const RATE_LIMITER_FILL_ALERT_RATIO = 0.8;
+export const RATE_LIMITER_FILL_REARM_RATIO = 0.7;
 // IPv6 rate-limit keys look like "ipv6:HHHH:HHHH:HHHH:HHHH/64" (padded). The
 // /48 is the first three hextets. IPv4 and non-ipv6 keys have no prefix.
 export function rateLimiterIpv6Prefix48(key) {
   const m = /^ipv6:([0-9a-f]{4}):([0-9a-f]{4}):([0-9a-f]{4}):[0-9a-f]{4}\/64$/.exec(key);
   return m ? `${m[1]}:${m[2]}:${m[3]}::/48` : undefined;
 }
+const FILL_LEVELS = ["ok", "high", "full"];
 // Fixed-window per-key limiter with a hard key bound.
 // - evictOnFull=false (default; faucet day windows): when full after sweeping
 //   expired entries, a new key is denied so live keys keep their counts.
@@ -933,34 +1008,136 @@ export function rateLimiterIpv6Prefix48(key) {
 //   new client (Red Team PR1200-1), victims already lose slots at window
 //   boundaries under a spray (PR1200-7), and evictions are counted so a flood
 //   shows up in /health. Eviction happens only to admit a new key.
-// - prefixCap>0: at most that many live keys per IPv6 /48; further /64s from
-//   the same /48 are denied (counted in deniedFull).
+// - prefixCap>0: at most that many live keys per IPv6 /48. perPrefix maps each
+//   /48 to an insertion-ordered Set of its live keys (oldest first). When a
+//   new /64 arrives and its /48 is at the cap (#1210 R2-1):
+//   - evictOnFull tables drop that /48's OWN oldest key to admit it (counted
+//     in evictedPrefix), so a sprayer only churns its own /48 and a neighbour
+//     in it is admitted instead of locked out for the whole spray;
+//   - deny-on-full tables (faucetIp) deny it (counted in deniedPrefix) with a
+//     Retry-After at the expiry of that /48's oldest key, the first moment a
+//     slot can free. Eviction there would let a /48 reset day quotas.
+// - Per-/48 budget (evictOnFull tables with prefixCap>0; #1213-1): own-oldest
+//   eviction alone would let one /48 cycle unlimited /64s, each with a fresh
+//   per-key quota. Each /48 therefore also has a fixed-window budget of
+//   prefixCap x limit requests per window. It is checked before the per-key
+//   take and spent only when the request is allowed; a refusal is counted in
+//   deniedPrefix and applies to every /64 in that /48 until the /48's window
+//   ends. The budget table holds at most maxKeys /48s (oldest dropped first).
+// - fillAlert=true: track 80%/full crossings, call onFill once per crossing,
+//   and report fill / fillAlerts in stats().
+// - peek(key) answers exactly what take(key) would answer at the same moment,
+//   without changing anything; refund(receipt) undoes one allowed take, but
+//   only within the window entry that take spent.
 export class WindowLimiter {
-  constructor(limit, windowMs, maxKeys = RATE_LIMITER_MAX_KEYS_DEFAULT, { evictOnFull = false, prefixCap = 0 } = {}) {
-    Object.assign(this, { limit, windowMs, maxKeys, evictOnFull, prefixCap, hits: new Map(), perPrefix: new Map(), deniedFull: 0, evicted: 0 });
+  constructor(limit, windowMs, maxKeys = RATE_LIMITER_MAX_KEYS_DEFAULT, { evictOnFull = false, prefixCap = 0, fillAlert = false, onFill } = {}) {
+    Object.assign(this, { limit, windowMs, maxKeys, evictOnFull, prefixCap, fillAlert, hits: new Map(), perPrefix: new Map(), prefixBudget: new Map(), deniedFull: 0, deniedPrefix: 0, evicted: 0, evictedPrefix: 0, fillAlerts: 0 });
+    this.prefixBudgetLimit = evictOnFull && prefixCap > 0 ? prefixCap * limit : 0;
+    this.#onFill = typeof onFill === "function" ? onFill : undefined;
+    this.#highAt = Math.max(1, Math.ceil(maxKeys * RATE_LIMITER_FILL_ALERT_RATIO));
+    this.#rearmBelow = Math.floor(maxKeys * RATE_LIMITER_FILL_REARM_RATIO);
   }
+  #onFill;
+  #highAt;
+  #rearmBelow;
+  #alertLevel = 0;
+  #prefixOf(key) { return this.prefixCap > 0 ? rateLimiterIpv6Prefix48(key) : undefined; }
   #drop(key) {
     this.hits.delete(key);
-    const p = rateLimiterIpv6Prefix48(key);
+    const p = this.#prefixOf(key);
     if (!p) return;
-    const n = (this.perPrefix.get(p) ?? 1) - 1;
-    if (n > 0) this.perPrefix.set(p, n); else this.perPrefix.delete(p);
+    const group = this.perPrefix.get(p);
+    if (!group) return;
+    group.delete(key);
+    if (group.size === 0) this.perPrefix.delete(p);
   }
   #expireFront(now) {
     for (const [k, e] of this.hits) {
       if (now - e.start < this.windowMs) break;
       this.#drop(k);
     }
+    for (const [p, e] of this.prefixBudget) {
+      if (now - e.start < this.windowMs) break;
+      this.prefixBudget.delete(p);
+    }
+  }
+  #live(entry, now) { return entry !== undefined && now - entry.start < this.windowMs; }
+  #level() { const n = this.hits.size; return n >= this.maxKeys ? 2 : n >= this.#highAt ? 1 : 0; }
+  #trackFill() {
+    if (!this.fillAlert) return;
+    const level = this.#level();
+    if (level > this.#alertLevel) {
+      this.#alertLevel = level;
+      this.fillAlerts += 1;
+      if (this.#onFill) this.#onFill({ level: FILL_LEVELS[level], ...this.stats() });
+    } else if (this.hits.size < this.#rearmBelow) this.#alertLevel = 0;
+  }
+  // The decision take() would make, without side effects (no expiry sweep,
+  // no counters). Used by the faucet route to check every table before it
+  // spends any of them. With record=true a refusal is still counted in
+  // deniedPrefix / deniedFull, as take() would count it.
+  peek(key, now = Date.now(), { record = false } = {}) {
+    const p = this.#prefixOf(key);
+    if (p && this.prefixBudgetLimit > 0) {
+      const budget = this.prefixBudget.get(p);
+      if (this.#live(budget, now) && budget.count >= this.prefixBudgetLimit) {
+        if (record) this.deniedPrefix += 1;
+        return { allowed: false, retryAfterMs: budget.start + this.windowMs - now };
+      }
+    }
+    const entry = this.hits.get(key);
+    if (this.#live(entry, now)) return entry.count >= this.limit ? { allowed: false, retryAfterMs: entry.start + this.windowMs - now } : { allowed: true };
+    if (this.limit < 1) return { allowed: false, retryAfterMs: this.windowMs };
+    if (this.evictOnFull) return { allowed: true };
+    const group = p ? this.perPrefix.get(p) : undefined;
+    if (group) {
+      let liveCount = 0;
+      let oldestLive;
+      for (const k of group) { const e = this.hits.get(k); if (this.#live(e, now)) { liveCount += 1; oldestLive ??= e; } }
+      if (liveCount >= this.prefixCap) {
+        if (record) this.deniedPrefix += 1;
+        return { allowed: false, retryAfterMs: Math.max(1, oldestLive.start + this.windowMs - now) };
+      }
+    }
+    // take() sweeps expired entries first; entries are in start order, so
+    // there is room iff the table is below its bound or its front expired.
+    if (this.hits.size >= this.maxKeys) {
+      const front = this.hits.values().next().value;
+      if (this.#live(front, now)) {
+        if (record) this.deniedFull += 1;
+        return { allowed: false, retryAfterMs: this.windowMs };
+      }
+    }
+    return { allowed: true };
   }
   take(key, now = Date.now()) {
+    const { receipt, ...result } = this.takeWithReceipt(key, now);
+    return result;
+  }
+  // take() plus, when allowed, a receipt naming the exact window entry and
+  // /48 budget it spent, so refund() can never credit a later window (#1213-7).
+  takeWithReceipt(key, now = Date.now()) {
     this.#expireFront(now);
+    const p = this.#prefixOf(key);
+    const budget = p && this.prefixBudgetLimit > 0 ? this.prefixBudget.get(p) : undefined;
+    if (budget && budget.count >= this.prefixBudgetLimit) {
+      this.deniedPrefix += 1;
+      return { allowed: false, retryAfterMs: budget.start + this.windowMs - now };
+    }
     let entry = this.hits.get(key);
     if (entry && now - entry.start >= this.windowMs) { this.#drop(key); entry = undefined; }
     if (!entry) {
-      const p = this.prefixCap > 0 ? rateLimiterIpv6Prefix48(key) : undefined;
-      if (p && (this.perPrefix.get(p) ?? 0) >= this.prefixCap) {
-        this.deniedFull += 1;
-        return { allowed: false, retryAfterMs: this.windowMs };
+      const group = p ? this.perPrefix.get(p) : undefined;
+      if (group && group.size >= this.prefixCap) {
+        const oldestKey = group.values().next().value;
+        if (this.evictOnFull) {
+          this.#drop(oldestKey);
+          this.evictedPrefix += 1;
+        } else {
+          this.deniedPrefix += 1;
+          const oldest = this.hits.get(oldestKey);
+          return { allowed: false, retryAfterMs: oldest ? Math.max(1, oldest.start + this.windowMs - now) : this.windowMs };
+        }
       }
       if (this.hits.size >= this.maxKeys) {
         if (this.evictOnFull) {
@@ -969,27 +1146,84 @@ export class WindowLimiter {
           this.evicted += 1;
         } else {
           this.deniedFull += 1;
+          this.#trackFill();
           return { allowed: false, retryAfterMs: this.windowMs };
         }
       }
       entry = { start: now, count: 0 };
       this.hits.set(key, entry);
-      if (p) this.perPrefix.set(p, (this.perPrefix.get(p) ?? 0) + 1);
+      if (p) {
+        const live = this.perPrefix.get(p);
+        if (live) live.add(key); else this.perPrefix.set(p, new Set([key]));
+      }
     }
+    this.#trackFill();
     if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
     entry.count += 1;
-    return { allowed: true };
+    let spentBudget;
+    if (p && this.prefixBudgetLimit > 0) {
+      if (budget) { budget.count += 1; spentBudget = budget; }
+      else {
+        if (this.prefixBudget.size >= this.maxKeys) this.prefixBudget.delete(this.prefixBudget.keys().next().value);
+        spentBudget = { start: now, count: 1 };
+        this.prefixBudget.set(p, spentBudget);
+      }
+    }
+    return { allowed: true, receipt: { key, entry, budget: spentBudget } };
+  }
+  // Undo one allowed take, given its receipt from takeWithReceipt(). Only the
+  // very entry (and /48 budget) that take spent is credited: if that window
+  // has since expired or been replaced, nothing is refunded. A key left with
+  // no uses is dropped so its slot frees too.
+  refund(receipt, now = Date.now()) {
+    if (!receipt || typeof receipt !== "object") return false;
+    const { key, entry, budget } = receipt;
+    const current = this.hits.get(key);
+    if (current === undefined || current !== entry || !this.#live(current, now) || current.count < 1) return false;
+    current.count -= 1;
+    if (current.count === 0) this.#drop(key);
+    const p = this.#prefixOf(key);
+    if (budget && p && this.prefixBudget.get(p) === budget && this.#live(budget, now) && budget.count > 0) budget.count -= 1;
+    return true;
   }
   stats() {
-    return { size: this.hits.size, maxKeys: this.maxKeys, deniedFull: this.deniedFull, evicted: this.evicted };
+    const base = { size: this.hits.size, maxKeys: this.maxKeys, deniedFull: this.deniedFull, deniedPrefix: this.deniedPrefix, evicted: this.evicted, evictedPrefix: this.evictedPrefix };
+    return this.fillAlert ? { ...base, fill: FILL_LEVELS[this.#level()], fillAlerts: this.fillAlerts } : base;
   }
 }
-// /health fragment for the gateway rate-limit tables (size / deniedFull /
-// evicted). Keepers and probes watch deniedFull or evicted rising under a spray.
+// One log line per fill crossing (counts only; no IPs, keys or prefixes).
+export function rateLimiterFillLine(name, info) {
+  return `rate limiter ${name}: ${info.level === "full" ? "full" : "at 80%"} (${info.size}/${info.maxKeys} keys; deniedFull=${info.deniedFull} deniedPrefix=${info.deniedPrefix} evicted=${info.evicted} evictedPrefix=${info.evictedPrefix})`;
+}
+// /health fragment for the gateway rate-limit tables. deniedFull counts
+// deny-on-full refusals, deniedPrefix /48-cap refusals (faucetIp),
+// evicted table-full evictions and evictedPrefix /48-cap evictions (60s
+// tables). Tables with fillAlert also report fill ("ok" | "high" | "full").
 export function rateLimitersHealth(limits) {
   const out = {};
   for (const name of Object.keys(limits)) out[name] = limits[name].stats();
   return out;
+}
+// Per-IP cap on /faucet attempts (valid or not) per 60s window, checked before
+// the body is read. Well above the 5-per-day drip quota, so it only bites a
+// client that is hammering the endpoint or holding slow bodies open.
+export const FAUCET_ATTEMPTS_PER_MINUTE = 10;
+// The gateway's rate-limit tables (exported so tests can check the wiring).
+export function createGatewayLimits({ env = process.env, log = (line) => console.warn(line) } = {}) {
+  const limiterMaxKeys = rateLimiterMaxKeys(env);
+  const fillOpts = (name) => ({ fillAlert: true, onFill: (info) => log(rateLimiterFillLine(name, info)) });
+  const shortWindowOpts = (name) => ({ evictOnFull: true, prefixCap: RATE_LIMITER_PREFIX_CAP_DEFAULT, ...fillOpts(name) });
+  return {
+    read: new WindowLimiter(Number(env.ZYRON_RPC_READS_PER_MINUTE ?? 240), 60_000, limiterMaxKeys, shortWindowOpts("read")),
+    write: new WindowLimiter(Number(env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000, limiterMaxKeys, shortWindowOpts("write")),
+    faucetIp: new WindowLimiter(5, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS, { prefixCap: RATE_LIMITER_PREFIX_CAP_DEFAULT, ...fillOpts("faucetIp") }),
+    faucetAddress: new WindowLimiter(1, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS, fillOpts("faucetAddress")),
+    // #1213-5: every /faucet attempt per IP per minute, taken before the body is read.
+    faucetAttempt: new WindowLimiter(FAUCET_ATTEMPTS_PER_MINUTE, 60_000, limiterMaxKeys, shortWindowOpts("faucetAttempt")),
+    faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
+    snapshot: new WindowLimiter(30, 3_600_000, 1),
+    relayIp: new WindowLimiter(Number(env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000, limiterMaxKeys, shortWindowOpts("relayIp"))
+  };
 }
 // Validator supervisor: exponential restart backoff (base doubling to max),
 // reset once a validator has run for stableMs, plus per-validator restart
@@ -2039,17 +2273,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return statusCache;
   }
 
-  const limiterMaxKeys = rateLimiterMaxKeys();
-  const shortWindowOpts = { evictOnFull: true, prefixCap: RATE_LIMITER_PREFIX_CAP_DEFAULT };
-  const limits = {
-    read: new WindowLimiter(Number(process.env.ZYRON_RPC_READS_PER_MINUTE ?? 240), 60_000, limiterMaxKeys, shortWindowOpts),
-    write: new WindowLimiter(Number(process.env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000, limiterMaxKeys, shortWindowOpts),
-    faucetIp: new WindowLimiter(5, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
-    faucetAddress: new WindowLimiter(1, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
-    faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
-    snapshot: new WindowLimiter(30, 3_600_000, 1),
-    relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000, limiterMaxKeys, shortWindowOpts)
-  };
+  const limits = createGatewayLimits();
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.
   const snapshotHistory = { chain: verifiedHistory?.chain ?? new ZyronChain(genesis), blocks: verifiedHistory?.chain ? verifiedHistory.blocks : [] };
@@ -2279,27 +2503,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return gatewayClientIdentity(request.socket.remoteAddress, request.headers, { trustCloudflareConnectingIp });
   }
 
-  let faucetQueue = Promise.resolve(); const faucetNonce = createFaucetNonceTracker();
-  function faucetSend(receiver) {
-    const run = faucetQueue.then(async () => {
-      const status = await chainStatus();
-      // Fresh (uncached) read of the node floor; throws FaucetFeeFloorError.
-      const feeAtoms = faucetTransferFeeAtoms(NODE_TRANSFER_FEE_ATOMS, await anyNode("/status"));
-      const nonceResponse = await anyNode(`/nonce/${faucet.address}`);
-      if (nonceResponse.status !== 200) throw new Error(`faucet nonce lookup failed (status ${nonceResponse.status})`);
-      // Chain state wins after a restore or a rejected drip (Red Team INFO #9).
-      const nonce = faucetNonce.next(nonceResponse.body.nonce, Date.now());
-      const tx = createTransfer({ chainId, nonce, sender: faucet.address, receiver, amountAtoms: FAUCET_DRIP_ATOMS, feeAtoms, timestampMs: Date.now() },
-        faucet.privateKey, faucet.publicKey, status.transactionVersion);
-      const submitted = await anyNode("/tx", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
-      // The node's error text is logged by the faucet route, never returned.
-      if (submitted.status < 200 || submitted.status > 299) { faucetNonce.rejected(nonce, { status: submitted.status, error: submitted.body?.error }, Date.now()); throw new Error(`faucet transfer rejected by node (status ${submitted.status}): ${String(submitted.body?.error ?? "").slice(0, 300)}`); }
-      faucetNonce.accepted(nonce, Date.now());
-      return { txid: tx.txid, receiver, amountAtoms: FAUCET_DRIP_ATOMS, nonce };
-    });
-    faucetQueue = run.catch(() => undefined);
-    return run;
-  }
+  const faucetSend = createFaucetSend({ chainStatus, anyNode, chainId, faucet });
 
   // Blocks above durableHeight are finalized but not yet in a published
   // snapshot: a cold start can replace them (docs/OPEN_TESTNET.md).
