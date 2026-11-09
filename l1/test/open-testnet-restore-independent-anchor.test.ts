@@ -61,8 +61,13 @@
 //     canonicalJson({ keyId, summary }); summaryDigest = sha256(message), hex.
 //   Validator/oracle/faucet keys are never trust anchors: a seal whose keyId is
 //     a validator, oracle or faucet address/public key, or a pinned key whose
-//     publicKey is the x-coordinate of one of those keys (checked against the
-//     sets the summary binds), -> RESTORE_SEAL_VALIDATOR_KEY.
+//     publicKey is the x-coordinate of one of those keys, -> RESTORE_SEAL_VALIDATOR_KEY.
+//     The validator and oracle keys are the sets the summary binds through
+//     validatorSetHash and oracleSetHash. The faucet key has no set hash: it is
+//     bound through genesisHash (the genesis names the public-distribution
+//     release address) and the faucet address, which must match keys/faucet.
+//   Precedence: revoked wins over supersededAtHeight (a revoked key is refused
+//     as RESTORE_SEAL_KEY_REVOKED whatever its supersededAtHeight).
 //
 // Every refusal is fail-closed: the promise rejects with an Error whose `code`
 // is the listed reason, the error is never marked `localIo` (not retried as a
@@ -551,6 +556,12 @@ test("S23-T19 restore-rejects-invalid-anchor-config", { timeout: 300_000 }, asyn
     "bad keyId": [pin(a, { keyId: "TEST FIXTURE ONLY" })],
     "extra field": [pin(a, { note: "x" })],
     "supersededAtHeight not an integer": [pin(a, { supersededAtHeight: 1.5 })],
+    "supersededAtHeight negative": [pin(a, { supersededAtHeight: -1 })],
+    "supersededAtHeight as string": [pin(a, { supersededAtHeight: "200" })],
+    "publicKey + zz": [pin(a, { publicKey: `${a.publicKey}zz` })],
+    "publicKey + 0 (odd length)": [pin(a, { publicKey: `${a.publicKey}0` })],
+    "publicKey + g": [pin(a, { publicKey: `${a.publicKey}g` })],
+    "publicKey + space": [pin(a, { publicKey: `${a.publicKey} ` })],
     "empty list": []
   };
   for (const [label, pinned] of Object.entries(configs)) await refusesWith(anchor({ key: a, pinned }), CODES.anchorConfigInvalid, label);
@@ -563,6 +574,9 @@ test("S23-T20 superseded (rotated) key only covers summaries below its supersede
   await refusesWith(anchor({ key, pinned: [pin(key, { supersededAtHeight: fx.expected.height })] }), CODES.keySuperseded, "at supersededAtHeight");
   await refusesWith(anchor({ key, pinned: [pin(key, { supersededAtHeight: 1 })] }), CODES.keySuperseded, "above supersededAtHeight");
   await succeedsWith(anchor({ key, pinned: [pin(key, { supersededAtHeight: fx.expected.height + 1 })] }), key, canonicalJson(fx.expected), "below supersededAtHeight");
+  // Precedence: revoked wins over supersededAtHeight, on both sides of it.
+  await refusesWith(anchor({ key, pinned: [pin(key, { revoked: true, supersededAtHeight: fx.expected.height + 1 })] }), CODES.keyRevoked, "revoked, below supersededAtHeight");
+  await refusesWith(anchor({ key, pinned: [pin(key, { revoked: true, supersededAtHeight: fx.expected.height })] }), CODES.keyRevoked, "revoked, at supersededAtHeight");
 });
 
 test("S23-T21 restore-rejects-wrong-signature-encoding", { timeout: 300_000 }, async () => {
@@ -582,7 +596,13 @@ test("S23-T21 restore-rejects-wrong-signature-encoding", { timeout: 300_000 }, a
     "uppercase hex": honest.signature.toUpperCase(),
     "63-byte signature": honest.signature.slice(0, 126),
     "65-byte signature": `${honest.signature}00`,
-    "base64 signature": Buffer.from(honest.signature, "hex").toString("base64")
+    "base64 signature": Buffer.from(honest.signature, "hex").toString("base64"),
+    // N1: Buffer.from(hex) silently drops these suffixes; the check must be
+    // an anchored /^[0-9a-f]{128}$/.
+    "valid + zz": `${honest.signature}zz`,
+    "valid + 0 (odd length)": `${honest.signature}0`,
+    "valid + g": `${honest.signature}g`,
+    "valid + space": `${honest.signature} `
   };
   for (const [label, signature] of Object.entries(signatures)) await refusesWith(anchor({ key, raw: rawSeal(key.keyId, signature, text) }), CODES.invalidSignature, label);
 });
@@ -619,7 +639,13 @@ test("S23-T22 restore-rejects-seal-schema-violations", { timeout: 300_000 }, asy
     "float height": replaceField(base, "height", `${fx.expected.height}.5`),
     "unsafe integer height": replaceField(base, "height", "9007199254740993"),
     "infinite height (1e400)": replaceField(base, "height", "1e400"),
-    "float sealedAtMs": replaceField(base, "sealedAtMs", "1.5")
+    "float sealedAtMs": replaceField(base, "sealedAtMs", "1.5"),
+    // N2: numbers JSON.parse accepts but canonicalJson would write differently.
+    "height -0": replaceField(base, "height", "-0"),
+    "height 1e2": replaceField(base, "height", "1e2"),
+    "height 1E2": replaceField(base, "height", "1E2"),
+    "height 1.0": replaceField(base, "height", "1.0"),
+    "height 120.0": replaceField(base, "height", "120.0")
   };
   for (const [label, text] of Object.entries(rawTexts)) await refusesWith(anchor({ key, raw: seal(key, text) }), CODES.sealSchemaInvalid, label);
   // A seal whose keyId breaks the keyId pattern (signed honestly under it).
@@ -656,6 +682,9 @@ test("S23-T24 restore-rejects-malformed-seal", { timeout: 300_000 }, async () =>
     "not JSON": "not a seal",
     "truncated JSON": honest.slice(0, -1),
     "NaN literal (JSON has no NaN)": honest.replace(`"height":${fx.expected.height}`, '"height":NaN'),
+    // N2: not JSON numbers at all.
+    "height +1": honest.replace(`"height":${fx.expected.height}`, '"height":+1'),
+    "height 01": honest.replace(`"height":${fx.expected.height}`, '"height":01'),
     "object instead of text": JSON.parse(honest),
     "bytes instead of text": Buffer.from(honest),
     "JSON array": `[${honest}]`,
@@ -665,13 +694,29 @@ test("S23-T24 restore-rejects-malformed-seal", { timeout: 300_000 }, async () =>
 });
 
 test("S23-T25 anchor and quorum reads that hang time out closed", { timeout: 300_000 }, async () => {
-  // L5: each read is bounded by restoreAnchor.timeoutMs.
-  const started = Date.now();
-  await refusesWith({ ...anchor(), readSeal: hang }, CODES.anchorTimeout, "readSeal hangs");
-  await refusesWith({ ...anchor(), readSuperseded: hang }, CODES.anchorTimeout, "readSuperseded hangs");
-  await refusesWith({ ...anchor(), readHighWater: hang }, CODES.anchorTimeout, "readHighWater hangs");
-  await refusesWith(anchor({ quorumTip: hang }), CODES.quorumTipTimeout, "readQuorumTip hangs");
-  assert.ok(Date.now() - started < 60_000, "hanging reads were not bounded by timeoutMs");
+  // L5 + N3: each read is bounded by restoreAnchor.timeoutMs. Each refusal must
+  // arrive within about 10x timeoutMs (an implementation that ignores
+  // timeoutMs and waits for its own default fails here, it does not hang the
+  // suite), and not before timeoutMs has passed (minus timer slack).
+  const bound = READ_TIMEOUT_MS * 10;
+  const timed = async (restoreAnchor: Json, code: string, label: string) => {
+    const dir = target();
+    const started = Date.now();
+    let timer: NodeJS.Timeout | undefined;
+    const run = restore(dir, bundle(), restoreAnchor);
+    const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error(`${label}: not refused within ${bound} ms (10x timeoutMs)`), { code: "TEST_BOUND_EXCEEDED" })), bound); });
+    try {
+      await refuses(Promise.race([run, limit]), code, dir, label);
+    } finally {
+      clearTimeout(timer);
+    }
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= READ_TIMEOUT_MS - 50, `${label}: refused after ${elapsed} ms, before timeoutMs (${READ_TIMEOUT_MS} ms) passed`);
+  };
+  await timed({ ...anchor(), readSeal: hang }, CODES.anchorTimeout, "readSeal hangs");
+  await timed({ ...anchor(), readSuperseded: hang }, CODES.anchorTimeout, "readSuperseded hangs");
+  await timed({ ...anchor(), readHighWater: hang }, CODES.anchorTimeout, "readHighWater hangs");
+  await timed(anchor({ quorumTip: hang }), CODES.quorumTipTimeout, "readQuorumTip hangs");
 });
 
 test("S23-T26 RFC 8032 TEST 1 seal vector (encoding is pinned)", { timeout: 60_000 }, async () => {
