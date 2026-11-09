@@ -20,9 +20,10 @@ jest.mock('../src/keys', () => ({
     fn(new Uint8Array(32), { address: `ZYN${'12'.repeat(20)}`, publicKey: 'pk' }),
 }));
 // Dialog content is rendered elsewhere (send-warnings.test.ts); here only the props are recorded.
-const mockDialogs: { kind: string; props: any }[] = [];
+const mockDialogs: { kind: string; props: any; type?: string }[] = [];
 jest.mock('../src/ui', () => ({
   FeeRejectedWarning: () => null,
+  HistorySaveFailedNotice: (props: unknown) => { mockDialogs.push({ kind: 'history-failed', props }); return null; },
   MessageConfirmation: () => null,
   ThresholdConfirmation: (props: unknown) => { mockDialogs.push({ kind: 'threshold', props }); return null; },
   TransferConfirmation: (props: unknown) => { mockDialogs.push({ kind: 'transfer', props }); return null; },
@@ -53,6 +54,7 @@ jest.mock('../src/rpc', () => ({
 }));
 
 import { onRpcRequest } from '../src/index';
+import { KNOWN_STATE_VERSION } from '../src/known-state';
 import { emptyKnown } from '../src/send-warnings';
 
 const DEFAULT_THRESHOLD_ATOMS = 1_000 * 100_000_000; // 1,000 ZYN
@@ -62,6 +64,9 @@ let stored: any;
 let writes: unknown[];
 let submitCallsAtWrite: number[];
 let dialogHook: (() => void) | undefined;
+let alertDeferred: { resolve: (v: unknown) => void; promise: Promise<unknown> } | undefined;
+let returnOrder: string[];
+let alertThrows = false;
 
 beforeEach(() => {
   stored = null;
@@ -69,6 +74,9 @@ beforeEach(() => {
   writes = [];
   submitCallsAtWrite = [];
   dialogHook = undefined;
+  alertDeferred = undefined;
+  returnOrder = [];
+  alertThrows = false;
   mockDialogs.length = 0;
   mockSubmit.fail = false;
   mockSubmit.calls = 0;
@@ -85,6 +93,19 @@ beforeEach(() => {
         }
       }
       if (method === 'snap_dialog') {
+        if (params?.type === 'alert') {
+          mockDialogs.push({ kind: 'alert', props: { type: 'alert' }, type: 'alert' });
+          if (alertThrows) {
+            throw new Error('dialog failed');
+          }
+          if (alertDeferred) {
+            returnOrder.push('alert-started');
+            await alertDeferred.promise;
+            returnOrder.push('alert-finished');
+            return null;
+          }
+          return null;
+        }
         const hook = dialogHook;
         dialogHook = undefined;
         hook?.();
@@ -153,7 +174,9 @@ describe('fail closed on unreadable saved state', () => {
     expect(mockSubmit.calls).toBe(1);
     expect(r.ok).toBe(true);
     expect(r.v.txid).toBe('txid');
+    expect(r.v.historySaved).toBe(false);
     expect(stored).toBeNull();
+    expect(mockDialogs.some((d) => d.kind === 'alert' || d.kind === 'history-failed')).toBe(true);
   });
 });
 
@@ -225,10 +248,205 @@ describe('Low-B: only a submitted sendTransfer records the receiver', () => {
   });
 
   it('the receiver is recorded only after submitTransfer succeeds', async () => {
-    await send(RECEIVER);
+    const r = await send(RECEIVER);
     expect(submitCallsAtWrite).toStrictEqual([1]);
     expect(stored.known.sent).toStrictEqual([RECEIVER]);
+    expect(r.historySaved).toBe(true);
     await send(RECEIVER);
     expect(transferWarnings()[1]).not.toContain('first-time');
+  });
+});
+
+describe('Info: historySaved notice after a failed history write', () => {
+  it('a successful history write returns historySaved true and shows no history-failed alert', async () => {
+    const r = await send(RECEIVER);
+    expect(r.historySaved).toBe(true);
+    expect(mockDialogs.filter((d) => d.kind === 'alert' || d.kind === 'history-failed')).toHaveLength(0);
+  });
+
+  it('a failed history write returns the txid with historySaved false (never an error)', async () => {
+    mode.update = () => { throw new Error('write failed'); };
+    const r = await outcome(send(OTHER));
+    expect(r.ok).toBe(true);
+    expect(r.v.txid).toBe('txid');
+    expect(r.v.historySaved).toBe(false);
+    expect(mockSubmit.calls).toBe(1);
+  });
+});
+
+describe('Info: one-time migration for pre-#1199 null thresholds', () => {
+  it('an old null threshold without schemaVersion becomes the default on load', async () => {
+    stored = known([], null); // pre-#1199 shape: no schemaVersion
+    await call('zyron_signTransaction', tx(RECEIVER, DEFAULT_THRESHOLD_ATOMS));
+    expect(transferWarnings()[0]).toContain('large-amount');
+    expect(stored.schemaVersion).toBe(1);
+    expect(stored.known.thresholdAtoms).toBe(DEFAULT_THRESHOLD_ATOMS);
+  });
+
+  it('a confirmed disable after migration keeps thresholdAtoms null', async () => {
+    stored = known([], null);
+    await call('zyron_signTransaction', tx(RECEIVER)); // triggers migration
+    expect(stored.known.thresholdAtoms).toBe(DEFAULT_THRESHOLD_ATOMS);
+    expect(await call('zyron_setWarningThreshold', { thresholdAtoms: null })).toStrictEqual({ thresholdAtoms: null });
+    expect(stored.known.thresholdAtoms).toBeNull();
+    expect(stored.schemaVersion).toBe(1);
+    await call('zyron_signTransaction', tx(RECEIVER, 10 ** 12));
+    expect(transferWarnings().at(-1)).not.toContain('large-amount');
+  });
+
+  it('corrupt state is still blocked and is not repaired by migration', async () => {
+    mode.get = () => ({ known: { contacts: [], sent: [], thresholdAtoms: null, x: 1 } });
+    const r = await outcome(send(RECEIVER));
+    expect(r.ok).toBe(false);
+    expect(mockDialogs).toHaveLength(0);
+    expect(mockSubmit.calls).toBe(0);
+  });
+
+  it('an invalid schemaVersion fails closed and is not repaired', async () => {
+    mode.get = () => ({ known: { contacts: [], sent: [], thresholdAtoms: null }, schemaVersion: '1' });
+    const r = await outcome(call('zyron_signTransaction', tx(RECEIVER)));
+    expect(r.ok).toBe(false);
+    expect(mockDialogs).toHaveLength(0);
+  });
+});
+
+describe('A: history-failed alert must not delay the txid return (Security PoC #1203)', () => {
+  it('if the alert never resolves, the txid is still returned with historySaved false', async () => {
+    mode.update = () => {
+      throw new Error('write failed');
+    };
+    const alertPromise = new Promise(() => {
+      /* never resolves */
+    });
+    alertDeferred = { resolve: () => undefined, promise: alertPromise };
+
+    let settled: any;
+    const pending = send(RECEIVER).then((v) => {
+      returnOrder.push('rpc-returned');
+      settled = v;
+      return v;
+    });
+
+    for (let i = 0; i < 40 && !returnOrder.includes('alert-started') && settled === undefined; i += 1) {
+      await Promise.resolve();
+    }
+    // Also give microtasks a turn after alert-started.
+    for (let i = 0; i < 40 && settled === undefined; i += 1) {
+      await Promise.resolve();
+    }
+
+    expect(mockSubmit.calls).toBe(1);
+    expect(returnOrder).toContain('alert-started');
+    expect(returnOrder).toContain('rpc-returned');
+    expect(settled).toEqual(
+      expect.objectContaining({ txid: 'txid', historySaved: false }),
+    );
+    expect(returnOrder).not.toContain('alert-finished');
+    // pending stays open because the alert never resolves; that must not block the txid above.
+    void pending;
+  });
+
+  it('alert ordering: alert is started after submit, and RPC returns without waiting for dismiss', async () => {
+    mode.update = () => {
+      throw new Error('write failed');
+    };
+    let resolveAlert!: (v: unknown) => void;
+    const alertPromise = new Promise((resolve) => {
+      resolveAlert = resolve;
+    });
+    alertDeferred = { resolve: resolveAlert, promise: alertPromise };
+
+    let settled: any;
+    const pending = send(OTHER).then((v) => {
+      returnOrder.push('rpc-returned');
+      settled = v;
+      return v;
+    });
+
+    for (let i = 0; i < 40 && !returnOrder.includes('rpc-returned'); i += 1) {
+      await Promise.resolve();
+    }
+    expect(mockSubmit.calls).toBe(1);
+    expect(returnOrder).toContain('alert-started');
+    expect(returnOrder).toContain('rpc-returned');
+    expect(returnOrder.indexOf('alert-started')).toBeLessThan(returnOrder.indexOf('rpc-returned'));
+    expect(settled.txid).toBe('txid');
+    expect(settled.historySaved).toBe(false);
+    expect(returnOrder).not.toContain('alert-finished');
+
+    resolveAlert(null);
+    await pending;
+    expect(returnOrder).toContain('alert-finished');
+  });
+
+  it('an alert that throws still returns the txid with historySaved false', async () => {
+    mode.update = () => {
+      throw new Error('write failed');
+    };
+    alertThrows = true;
+    const r = await outcome(send(RECEIVER));
+    expect(r.ok).toBe(true);
+    expect(r.v.txid).toBe('txid');
+    expect(r.v.historySaved).toBe(false);
+    expect(mockSubmit.calls).toBe(1);
+  });
+});
+
+describe('B: schemaVersion / outer-state fail-closed matrix (Security PoC #1203)', () => {
+  const invalidVersions: [string, unknown][] = [
+    ['string "1"', '1'],
+    ['1.5', 1.5],
+    ['0', 0],
+    ['negative', -1],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['null', null],
+    ['boolean true', true],
+    ['object', {}],
+    ['array', []],
+  ];
+
+  for (const [label, schemaVersion] of invalidVersions) {
+    it(`schemaVersion ${label}: blocked before dialog/submit`, async () => {
+      mode.get = () => ({ known: { contacts: [], sent: [], thresholdAtoms: null }, schemaVersion });
+      const r = await outcome(send(RECEIVER));
+      expect(r.ok).toBe(false);
+      expect(mockSubmit.calls).toBe(0);
+      expect(mockDialogs.filter((d) => d.type === 'confirmation' || d.kind === 'transfer')).toHaveLength(0);
+    });
+  }
+
+  it('schemaVersion greater than KNOWN_STATE_VERSION fails closed', async () => {
+    mode.get = () => ({ known: { contacts: [], sent: [], thresholdAtoms: null }, schemaVersion: KNOWN_STATE_VERSION + 1 });
+    const r = await outcome(send(RECEIVER));
+    expect(r.ok).toBe(false);
+    expect(mockSubmit.calls).toBe(0);
+    expect(mockDialogs).toHaveLength(0);
+  });
+
+  it('extra outer key fails closed', async () => {
+    mode.get = () => ({ known: { contacts: [], sent: [], thresholdAtoms: null }, schemaVersion: 1, x: 1 });
+    expect((await outcome(send(RECEIVER))).ok).toBe(false);
+    expect(mockSubmit.calls).toBe(0);
+  });
+
+  it('enumerable own-property __proto__ outer key fails closed', async () => {
+    mode.get = () => {
+      const o: any = { known: { contacts: [], sent: [], thresholdAtoms: null } };
+      Object.defineProperty(o, '__proto__', { value: { polluted: true }, enumerable: true, configurable: true });
+      return o;
+    };
+    expect((await outcome(send(RECEIVER))).ok).toBe(false);
+    expect(mockSubmit.calls).toBe(0);
+  });
+
+  it('saveKnown writes known+schemaVersion together (single update)', async () => {
+    stored = known([], null);
+    await call('zyron_signTransaction', tx(RECEIVER));
+    expect(writes.length).toBeGreaterThanOrEqual(1);
+    for (const w of writes as any[]) {
+      expect(Object.keys(w).sort()).toEqual(['known', 'schemaVersion']);
+      expect(w.schemaVersion).toBe(1);
+    }
   });
 });
