@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/l1.yml'
+      - '.github/workflows/l1-t1-trust-append-only.yml'
       - '.github/scripts/verify-l1-action-custody.mjs'
       - '.github/workflows/l1-action-custody-policy.yml'
   push:
@@ -11,6 +12,7 @@ on:
       - main
     paths:
       - '.github/workflows/l1.yml'
+      - '.github/workflows/l1-t1-trust-append-only.yml'
       - '.github/scripts/verify-l1-action-custody.mjs'
       - '.github/workflows/l1-action-custody-policy.yml'
 

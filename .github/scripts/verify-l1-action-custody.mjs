@@ -59,4 +59,34 @@ for (const required of ['node-version: [22, 24]', 'npm audit --omit=dev --audit-
   if (!workflow.includes(required)) throw new Error(`Required Standalone L1 security check missing: ${required}`);
 }
 
+// S2-3 T1 base-branch checker (pull_request_target): pinned actions, read-only
+// token, no persisted credentials, and it never executes code from the PR
+// head (the head is fetched as git data and read with `git show` only).
+const t1Path = new URL('../workflows/l1-t1-trust-append-only.yml', import.meta.url);
+const t1 = await readFile(t1Path, 'utf8');
+for (const action of ['checkout', 'setup-node']) {
+  const mutable = t1.match(new RegExp(`actions/${action}@(?![0-9a-f]{40}\\b)[^\\s]+`, 'g')) ?? [];
+  if (mutable.length) throw new Error(`T1 append-only: mutable ${action} reference(s): ${mutable.join(', ')}`);
+}
+const t1Uses = [...t1.matchAll(/uses:\s*([^\s#]+)/g)].map((match) => match[1]);
+const t1Allowed = new Set([`actions/checkout@${CHECKOUT_SHA}`, `actions/setup-node@${SETUP_NODE_SHA}`]);
+if (t1Uses.length !== 2 || t1Uses.some((ref) => !t1Allowed.has(ref))) throw new Error(`T1 append-only: only the pinned checkout and setup-node are allowed (${t1Uses.join(', ')})`);
+const t1Checks = [
+  [/^on:\s*\n\s+pull_request_target:/m, 'runs on pull_request_target only'],
+  [/^permissions:\s*\n\s+contents:\s*read\s*\n(?!\s+\w)/m, 'top-level permissions are exactly contents: read'],
+  [/persist-credentials:\s*false/, 'checkout disables credential persistence'],
+  [/node l1\/scripts\/t1-trust-append-only\.mjs --merge-base origin\/main --head "\$PR_HEAD_SHA"/, 'runs the base checker against the head as data']
+];
+for (const [pattern, label] of t1Checks) if (!pattern.test(t1)) throw new Error(`T1 append-only: ${label}`);
+const t1Forbidden = [
+  [/^\s*ref:/m, 'checkout must stay on the base branch (no ref:)'],
+  [/\bsecrets\./, 'no secrets'],
+  [/github\.event\.pull_request\.head\.(ref|repo)|github\.head_ref/, 'no head ref or head repo is used'],
+  [/\b(npm|npx|yarn|pnpm)\b|git (checkout|switch|worktree|merge|reset)|cache:/, 'no install, build, cache or checkout of the head'],
+  [/^\s+(pull-requests|issues|actions|checks|statuses|id-token|packages|deployments):/m, 'no extra token permissions']
+];
+for (const [pattern, label] of t1Forbidden) if (pattern.test(t1)) throw new Error(`T1 append-only: ${label}`);
+const t1Run = t1.slice(t1.indexOf('run: |'));
+if (/\$\{\{/.test(t1Run)) throw new Error('T1 append-only: event values must reach the script through env only');
+
 console.log('l1-action-custody-policy: ok');

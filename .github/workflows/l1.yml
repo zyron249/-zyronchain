@@ -122,6 +122,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history for the T1 append-only merge-base / push comparison.
+          fetch-depth: 0
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -130,10 +132,6 @@ jobs:
           cache-dependency-path: l1/package-lock.json
       - name: Install locked dependencies
         run: npm ci
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Test
-        run: npm test
       # S2-3 T1: l1/trust/ is append-only. The checker that runs is the trusted
       # copy from main (the merge base for a PR, the previous main for a push),
       # never this change's own copy, except when main has none yet
@@ -169,6 +167,10 @@ jobs:
             cp scripts/t1-trust-append-only.mjs "$checker"
           fi
           node "$checker" "${mode[@]}"
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
       - name: Verify reproducible build and release package
         run: |
           # Two clean builds must produce byte-identical packages; packing one
