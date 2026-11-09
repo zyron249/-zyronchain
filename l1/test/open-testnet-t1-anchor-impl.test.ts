@@ -656,7 +656,9 @@ test("M2-R2 non-public sources: NAT64, 6to4, 198.18/15 and friends are refused; 
   assert.equal(await codeOf(() => read(resolving({ "a.example": ["93.184.216.34"] }))), C.quorumTipUnavailable);
   assert.equal(fetches, 1);
   // The loopback test fixture is not resolved.
-  assert.equal((await boot.assertPublicQuorumResolution([{ url: "http://127.0.0.1:9001" }], { lookupImpl: async () => { throw new Error("must not resolve"); } })).size, 0);
+  const fixtureResolution = await boot.assertPublicQuorumResolution([{ url: "http://127.0.0.1:9001" }], { lookupImpl: async () => { throw new Error("must not resolve"); } });
+  assert.equal(fixtureResolution.failed.size, 0);
+  assert.equal(fixtureResolution.pinned.size, 0);
 });
 
 test("Info: the high-water tipHash is cross-checked (verifier and highWaterFor); a conflicting live seal at one height is refused", async () => {
@@ -703,4 +705,56 @@ test("Info signer: lstat, then O_NOFOLLOW | O_NONBLOCK open; a hard-linked key o
     assert.match(source, /O_NONBLOCK/);
     assert.match(source, /info\.ino !== before\.ino/, "a real inode compare between lstat and fstat");
   } finally { await rm(outside, { recursive: true, force: true }); }
+});
+
+// ---- #1209 third review round (M2-R2b, DNS-rebinding pin) ----------------------
+
+test("M2-R2b non-public sources: site-local fec0::/10, discard 100::/64 and 6to4 relay 192.88.99.0/24", () => {
+  for (const host of ["[fec0::1]", "[feff::1]", "[100::1]", "[100::ffff:1]", "192.88.99.1", "192.88.99.255"]) {
+    assert.equal(configCode([`https://${host}/v`, "https://b.example/v", "https://c.example/v", "https://d.example/v"]), C.anchorConfigInvalid, host);
+  }
+  for (const address of ["fec0::1", "fed0:1::2", "100::", "100:0:0:0:ffff::1", "192.88.99.7", "::ffff:192.88.99.7", "64:ff9b::192.168.0.1"]) assert.equal(anchorApi.isPrivateOrLoopbackHost(address), true, address);
+  for (const address of ["100:0:0:1::1", "192.88.98.1", "192.88.100.1", "fe00::1", "2001:4860:4860::8888"]) assert.equal(anchorApi.isPrivateOrLoopbackHost(address), false, address);
+  assert.deepEqual(anchorApi.ipv6Groups("::ffff:1.2.3.4"), [0, 0, 0, 0, 0, 0xffff, 0x0102, 0x0304]);
+  assert.equal(anchorApi.ipv6Groups("1:2:3:4:5:6:7:8:9"), null);
+  assert.equal(anchorApi.isPrivateOrLoopbackHost("[zz::1]"), true, "an unparsable IPv6 literal is refused");
+});
+
+test("DNS-rebinding pin: the request connects only to the checked address, with the hostname kept for Host and TLS", { timeout: 30_000 }, async () => {
+  // Resolution pins the first checked address of each name.
+  const calls: string[] = [];
+  const lookupImpl = async (host: string) => { calls.push(host); return [{ address: "93.184.216.34", family: 4 }, { address: "93.184.216.35", family: 4 }]; };
+  const resolution = await boot.assertPublicQuorumResolution([{ url: "https://node.example/v" }, { url: "https://203.0.114.9/v" }], { lookupImpl });
+  assert.deepEqual([...resolution.pinned.entries()], [["node.example", { address: "93.184.216.34", family: 4 }]]);
+  assert.deepEqual(calls, ["node.example"], "IP literals are not resolved");
+  // A real request to a name that does not resolve at all reaches the pinned address:
+  // nothing resolves the name again, and the Host header keeps the name.
+  let seenHost: string | undefined;
+  const server: Server = createServer((request, response) => {
+    seenHost = request.headers.host;
+    if (request.url === "/big") { response.writeHead(200); response.end(Buffer.alloc(2048, 1)); return; }
+    response.writeHead(200, { "content-type": "application/json" }); response.end('{"ok":true}');
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  try {
+    const port = (server.address() as { port: number }).port;
+    const pinned = boot.pinnedFetch(new Map([["rebind.invalid", { address: "127.0.0.1", family: 4 }]]), { maxBytes: 1024 });
+    const response = await pinned(`http://rebind.invalid:${port}/block/1`, { signal: AbortSignal.timeout(5_000) });
+    assert.equal(response.status, 200);
+    assert.equal(Buffer.from(await response.arrayBuffer()).toString("utf8"), '{"ok":true}');
+    assert.equal(seenHost, `rebind.invalid:${port}`, "Host keeps the hostname");
+    await assert.rejects(async () => (await pinned(`http://rebind.invalid:${port}/big`)).arrayBuffer(), /too large/, "body cap");
+    await assert.rejects(pinned(`http://unpinned.invalid:${port}/block/1`), /no checked address is pinned/, "an unpinned name is refused");
+  } finally { server.closeAllConnections(); server.close(); }
+  // https: the URL keeps the hostname (SNI and certificate check use it); only lookup is pinned.
+  let captured: Json;
+  const httpsImpl = { request: (url: URL, options: Json) => { captured = { url, options }; const emitter: Json = { on: () => emitter, end: () => {} }; return emitter; } };
+  void boot.pinnedFetch(new Map([["node.example", { address: "93.184.216.34", family: 4 }]]), { httpsImpl })("https://node.example/v/block/7");
+  assert.equal(captured.url.hostname, "node.example");
+  assert.equal(captured.options.servername, undefined, "no SNI override: TLS uses the hostname");
+  assert.equal(captured.options.agent, false, "a fresh agent: no pooled socket to another address");
+  const viaLookup = await new Promise<Json>((resolve) => captured.options.lookup("node.example", {}, (_e: unknown, address: string, family: number) => resolve({ address, family })));
+  assert.deepEqual(viaLookup, { address: "93.184.216.34", family: 4 });
+  const viaLookupAll = await new Promise<Json>((resolve) => captured.options.lookup("node.example", { all: true }, (_e: unknown, list: Json) => resolve(list)));
+  assert.deepEqual(viaLookupAll, [{ address: "93.184.216.34", family: 4 }]);
 });
