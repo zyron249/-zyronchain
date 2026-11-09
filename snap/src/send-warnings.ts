@@ -17,6 +17,8 @@ export const SELF_SEND_MESSAGE = "You can't send to your own address. Enter a di
 export const KNOWN_MAX_CONTACTS = 100;
 export const KNOWN_MAX_SENT = 200;
 export const KNOWN_NAME_MAX = 64;
+/** Large-amount warning threshold on a fresh install: 1,000 ZYN. Turning it off needs a confirmed dialog. */
+export const DEFAULT_WARNING_THRESHOLD_ATOMS = 1_000 * ATOMS_PER_ZYN;
 export const LOOKALIKE_MIN_SHARED = 6;
 export const LOOKALIKE_MAX_DIFF = 2;
 export const LOOKALIKE_MAX_COMPARISONS = 250;
@@ -105,7 +107,7 @@ export function displayAddress(address: string): string {
  * @returns A fresh empty book.
  */
 export function emptyKnown(): KnownAddresses {
-  return { contacts: [], sent: [], thresholdAtoms: null };
+  return { contacts: [], sent: [], thresholdAtoms: DEFAULT_WARNING_THRESHOLD_ATOMS };
 }
 
 /**

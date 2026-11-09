@@ -113,8 +113,13 @@ port of `l1/src/send-warnings.ts` kept equal by `test/send-warnings.test.ts`):
 
 The sent-to history (newest 200 receivers) and the threshold live only in the Snap's encrypted
 state (`snap_manageState`). They hold no key material and are never sent anywhere.
-`zyron_setWarningThreshold` takes exactly `{ thresholdAtoms }` (integer atoms, or `null` to turn the
-warning off) and asks for confirmation before saving.
+The large-amount warning is on by default at 1,000 ZYN. `zyron_setWarningThreshold` takes exactly
+`{ thresholdAtoms }` (integer atoms, or `null` to disable the warning) and asks for confirmation
+before saving; disabling shows a dialog that says the warning is being disabled.
+
+Only a `zyron_sendTransfer` that the gateway accepted adds its receiver to the sent-to history. A
+sign-only `zyron_signTransaction` and a failed submit do not, so that receiver still gets the
+first-time warning next time.
 
 ## Derivation path (provisional)
 
