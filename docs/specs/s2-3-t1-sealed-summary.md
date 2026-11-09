@@ -88,14 +88,28 @@ Both records are hash chains: each entry has `index` (1, 2, ...) and `prev`
 (`SHA-256(canonicalJson(previous entry))`, zeros for the first). An edited, removed or
 reordered entry makes the file invalid (`RESTORE_ANCHOR_CONFIG_INVALID`).
 
+Append-only and PR-only, enforced at review time (a hash chain alone cannot stop a rewrite with
+recomputed `prev` hashes):
+- `.github/CODEOWNERS` lists `/l1/trust/`, so every change to it needs code-owner review.
+- `l1/scripts/t1-trust-append-only.mjs --base <PR base sha>` runs in the Standalone L1 CI job on
+  every pull request. It fails unless the base entries of `t1-summary-record.json` and
+  `t1-high-water.json` are an unchanged prefix of the head entries (byte-identical canonical
+  JSON at the same positions), every base key in `t1-summary-keys.json` is still pinned
+  unchanged at the same position (keys are only added; revocation and rotation go through the
+  record, never through edits), none of these files is deleted, and the local test-fixture
+  marker `TEST-FIXTURE-ONLY-loopback-quorum` is absent. The seal text and the quorum config
+  may change.
+
 Record kinds: `revoke-key { keyId }` (the key is `revoked: true`), `supersede-key { keyId,
 supersededAtHeight }` (the key only covers summaries with `height < supersededAtHeight`),
 `supersede-summary { summaryDigest, height, tipHash }` (that seal, or any seal for that tip, is
 refused). Revoked wins over `supersededAtHeight`.
 
-High-water: each entry `{ chainId, height, summaryDigest }` records one seal accepted for
-publication. Its effective value for a chain is the highest entry whose seal is not
-superseded; superseding the seal at H+50 makes it resolve to the seal at H. It is never derived
+High-water: each entry `{ chainId, height, tipHash, summaryDigest }` records one seal accepted
+for publication. Its effective value for a chain is the highest entry whose seal is not
+superseded, where a `supersede-summary` entry matches by `summaryDigest` or by `height` and
+`tipHash` together. Superseding the H+50 seal, or the H+50 tip, makes it resolve to the seal at
+H, so a superseded tip never deadlocks the restore at REPLAY_LOWER_HEIGHT. It is never derived
 from the superseded list. A new seal enters by one PR that adds the seal text and appends its
 high-water entry together (`t1-build-summary.mjs high-water`); a restore refuses a seal above
 the effective high-water (`RESTORE_SUMMARY_HIGH_WATER_CONFLICT`) or below it
@@ -117,8 +131,14 @@ the effective high-water (`RESTORE_SUMMARY_HIGH_WATER_CONFLICT`) or below it
 Live quorum tip (restore and builder): `GET {url}/block/{height}` from each pinned validator;
 a block counts only if its hash recomputes over its header, its height and chain ID match, and
 its secp256k1 finality attestations verify against the pinned validator keys. The tip needs at
-least `threshold` distinct trusted attesters (threshold in [floor(2n/3)+1, n], n >= 3) from at
-least two sources. Two verified tips -> `RESTORE_QUORUM_TIP_MISMATCH`; deadline ->
+least `threshold` distinct trusted attesters (threshold in [floor(2n/3)+1, n], n >= 3) from
+verified sources on at least two distinct URL origins (one host answering for every validator
+is not a quorum). The pinned config must list distinct URLs from at least two origins, each
+`https` on a public host: loopback, localhost, private, link-local, unique-local and
+`.local`/`.internal` hosts are refused (`RESTORE_ANCHOR_CONFIG_INVALID`). `http://127.0.0.1`
+sources are accepted only in a local test fixture trust directory that carries the
+`TEST-FIXTURE-ONLY-loopback-quorum` marker, which the CI check above keeps out of the
+repository. Two verified tips -> `RESTORE_QUORUM_TIP_MISMATCH`; deadline ->
 `RESTORE_QUORUM_TIP_TIMEOUT`; too few -> `RESTORE_QUORUM_TIP_UNAVAILABLE`.
 
 ## 6. Restore checks (order) and refusal codes
@@ -135,7 +155,12 @@ keys; keyId; revoked; rotated; signature; superseded; high-water; chain; genesis
 live quorum tip; snapshot tip; then (after writes, into staging) replay and the post-replay
 checks, repeated just before the completion marker. The restore writes into
 `<dir>.restore-staging` and renames it onto `<dir>` only after every check passed and the
-marker is written, so a refusal or crash never leaves restore output at the target.
+marker is written, so a refusal or crash never leaves restore output at the target. A refusal
+removes this attempt's staging directory. A staging directory left over by a crash is moved aside
+before the restore runs again from the bundle, and never deleted or promoted: an incomplete one
+like any incomplete network directory (`<staging>.incomplete-<ms>-<pid>/`), and one that already
+holds a completion marker (a crash between the marker and the rename) to
+`<staging>.leftover-<ms>-<pid>`.
 
 | Code | When |
 |---|---|
@@ -173,10 +198,12 @@ marker is written, so a refusal or crash never leaves restore output at the targ
   agent) generates it and keeps it outside `/workspace`, mode 0600. Only the public key and
   keyId enter the repository, by a later PR reviewed by Patron and Security.
 - The key is never placed in the gateway, Render, CI, environment variables or logs. The signer
-  `t1-sign-summary.mjs --summary <file> --key-file <path>` reads it only from an absolute path to
-  a regular non-symlink file owned by the user with mode 0600, outside `/workspace` and the
-  repository; it refuses key material on the command line or in the environment and prints
-  only `{"keyId","signature"}`.
+  `t1-sign-summary.mjs --summary <file> --key-file <path>` reads it only from an absolute path
+  whose real directory is outside `/workspace` and the repository. It opens the file with
+  `O_NOFOLLOW` (a symlink fails), checks the open descriptor with `fstat` (regular file, mode
+  0600, owned by the user), reads it into a Buffer, builds the KeyObject from that Buffer and
+  zeroes the Buffer (`fill(0)`). It refuses key material on the command line or in the
+  environment and prints only `{"keyId","signature"}`.
 - Independence is weaker than a separate machine: the signer runs on the same shared machine
   as the office agents, so a compromise of that machine can reach the key file. The live quorum
   tip match and PR review of every seal limit what a stolen key can do alone.
@@ -203,6 +230,8 @@ tip match, which a stale seal cannot pass. `sealedAtMs` is signed and informatio
   high-water entry and a quorum are pinned by PR.
 - Smoke: builds a summary from the validators' own logs, signs it with a runtime TEST key and
   restores with that fixture anchor; it asserts the unanchored restore is refused.
-- Tests: CLI tests point the boot at a fixture trust directory through a `node --import` preload
-  that sets `globalThis[Symbol.for("zyronchain.open-testnet.test-restore-trust-dir")]`; it is
-  not reachable from the environment, command line or network.
+- No test seam: the boot always reads `l1/trust/` next to its own scripts (the checkout of the
+  release ref). There is no environment variable, option, global or preload hook that redirects
+  it, so `NODE_OPTIONS=--import ...` cannot point a production boot at other files. CLI tests run
+  a copy of `l1/scripts` in a temporary l1 tree (with `dist`, `node_modules` and `package.json`
+  linked) whose `trust/` holds fixture files.
