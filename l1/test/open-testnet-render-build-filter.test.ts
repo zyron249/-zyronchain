@@ -1,7 +1,8 @@
-// The Render blueprint auto-deploys on every commit to main, and each deploy
-// restarts the free open-testnet instance (blocks after the last published
-// snapshot are lost). A build filter limits deploys to changes that can affect
-// the service: the l1 package it builds and runs, and its deploy directory.
+// Deploys of the free open-testnet instance are manual (dashboard Auto-Deploy
+// Off). Each deploy still restarts the instance (blocks after the last published
+// snapshot are lost). A build filter limits which path changes could trigger a
+// deploy if Auto-Deploy were re-enabled: the l1 package it builds and runs, and
+// its deploy directory.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
