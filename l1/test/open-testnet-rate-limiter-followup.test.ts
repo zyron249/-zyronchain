@@ -73,11 +73,11 @@ test("R2-1: on a deny table (faucetIp style) a /48 at its cap is denied with Ret
 
 test("R2-3: /health counters split /48-cap events from table-full events and report the fill level", () => {
   const limits = api.createGatewayLimits({ env: {}, log: () => {} });
-  for (const name of ["read", "write", "relayIp", "faucetIp", "faucetAddress", "faucetGlobal", "snapshot"]) {
+  for (const name of ["read", "write", "relayIp", "faucetIp", "faucetAddress", "faucetAttempt", "faucetGlobal", "snapshot"]) {
     const s = limits[name].stats();
     for (const field of ["size", "maxKeys", "deniedFull", "deniedPrefix", "evicted", "evictedPrefix"]) assert.equal(typeof s[field], "number", `${name}.${field}`);
   }
-  for (const name of ["read", "write", "relayIp", "faucetIp", "faucetAddress"]) {
+  for (const name of ["read", "write", "relayIp", "faucetIp", "faucetAddress", "faucetAttempt"]) {
     assert.equal(limits[name].stats().fill, "ok", name);
     assert.equal(limits[name].stats().fillAlerts, 0, name);
   }
@@ -91,7 +91,7 @@ test("R2-3: /health counters split /48-cap events from table-full events and rep
   assert.equal(limits.faucetAddress.prefixCap, 0);
   for (const name of ["read", "write", "relayIp"]) assert.equal(limits[name].prefixCap, 256, name);
   const body = api.rateLimitersHealth(limits);
-  assert.deepEqual(Object.keys(body).sort(), ["faucetAddress", "faucetGlobal", "faucetIp", "read", "relayIp", "snapshot", "write"]);
+  assert.deepEqual(Object.keys(body).sort(), ["faucetAddress", "faucetAttempt", "faucetGlobal", "faucetIp", "read", "relayIp", "snapshot", "write"]);
 });
 
 test("R2-3: one fill log line at 80% and one at full, re-armed only below 70%; the line carries counts, never keys", () => {
@@ -190,6 +190,7 @@ test("R2-6: fuzz (port of Red Team D2): random takes keep per-/48 sets exact, ne
   const r = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   const configs = [
     { max: 50, cap: 8, evictOnFull: true },
+    { max: 50, cap: 2, evictOnFull: true },
     { max: 500, cap: 64, evictOnFull: true },
     { max: 2_000, cap: 256, evictOnFull: true },
     { max: 50, cap: 8, evictOnFull: false },
@@ -204,7 +205,9 @@ test("R2-6: fuzz (port of Red Team D2): random takes keep per-/48 sets exact, ne
       const k = c < 0.6 ? bucket(`2001:db8:${hex(Math.floor(r() * 12))}:${hex(Math.floor(r() * 300))}::1`)
         : c < 0.9 ? bucket(`198.18.0.${Math.floor(r() * 200)}`)
           : `proxy:${bucket("2001:db8:9::1")}`;
+      const predicted = l.peek(k, t);
       const res = l.take(k, t);
+      assert.deepEqual(predicted, res, `peek must predict take (${JSON.stringify(cfg)} @${i})`);
       if (!res.allowed) assert.ok(res.retryAfterMs > 0 && res.retryAfterMs <= 1_000, `retryAfter ${res.retryAfterMs}`);
       assert.ok(l.hits.size <= cfg.max);
       if (i % 997 === 0) checkConsistent(l, cfg.cap, `${JSON.stringify(cfg)} @${i}`);
@@ -215,21 +218,39 @@ test("R2-6: fuzz (port of Red Team D2): random takes keep per-/48 sets exact, ne
     assert.equal(l.hits.size, 1);
     const s = l.stats();
     // The small-cap configs must actually exercise the /48 path.
-    if (cfg.evictOnFull) { if (cfg.cap <= 8) assert.ok(s.evictedPrefix > 0, JSON.stringify(s)); assert.equal(s.deniedPrefix, 0); assert.equal(s.deniedFull, 0); }
+    if (cfg.evictOnFull) { if (cfg.cap <= 8) assert.ok(s.evictedPrefix > 0, JSON.stringify(s)); if (cfg.cap <= 2) assert.ok(s.deniedPrefix > 0, `budget exercised ${JSON.stringify(s)}`); assert.equal(s.deniedFull, 0); assert.ok(l.prefixBudget.size <= cfg.max); }
     else { if (cfg.cap <= 8) assert.ok(s.deniedPrefix > 0, JSON.stringify(s)); assert.equal(s.evictedPrefix, 0); assert.equal(s.evicted, 0); }
   }
 });
 
-test("peek is read-only and refuses only a live key that used its whole window", () => {
-  const l = new api.WindowLimiter(2, 1_000, 10, { prefixCap: 1 });
+test("peek is read-only and predicts take: exhausted key, capped /48 and full table on deny tables", () => {
+  const l = new api.WindowLimiter(2, 1_000, 3, { prefixCap: 1 });
   assert.equal(l.peek("a", 0).allowed, true);
   assert.equal(l.hits.size, 0);
   l.take("a", 0); l.take("a", 1);
   assert.deepEqual(l.peek("a", 100), { allowed: false, retryAfterMs: 900 });
   assert.equal(l.peek("a", 1_000).allowed, true, "expired window");
-  l.take(v6(1, 0), 0);
-  assert.equal(l.peek(v6(1, 1), 0).allowed, true, "a capped /48 is decided by take, after validation");
-  assert.equal(l.hits.size, 2);
+  l.take(v6(1, 0), 200);
+  assert.deepEqual(l.peek(v6(1, 1), 300), { allowed: false, retryAfterMs: 900 }, "capped /48 on a deny table");
+  assert.deepEqual(l.take(v6(1, 1), 300), { allowed: false, retryAfterMs: 900 });
+  l.take("b", 400);
+  assert.deepEqual(l.peek("c", 500), { allowed: false, retryAfterMs: 1_000 }, "full deny table");
+  assert.equal(l.peek("c", 1_000).allowed, true, "front entry expired: take will make room");
+  assert.equal(l.take("c", 1_000).allowed, true);
+  const before = JSON.stringify(l.stats());
+  for (let i = 0; i < 50; i += 1) l.peek(`x${i}`, 1_001);
+  assert.equal(JSON.stringify(l.stats()), before, "peek changes no counters");
+});
+
+test("refund undoes one allowed take and frees an unused key's slot", () => {
+  const l = new api.WindowLimiter(1, DAY, 2, { prefixCap: 1 });
+  assert.equal(l.take(v6(1, 0), 0).allowed, true);
+  assert.equal(l.take(v6(1, 1), 1).allowed, false, "/48 capped");
+  assert.equal(l.refund(v6(1, 0), 2), true);
+  assert.equal(l.hits.size, 0);
+  assert.equal(l.perPrefix.size, 0);
+  assert.equal(l.take(v6(1, 1), 3).allowed, true, "slot freed by the refund");
+  assert.equal(l.refund("never-taken", 4), false);
 });
 
 // ---- R3-3: faucet route takes the per-IP quota only after the body validates.
@@ -292,14 +313,154 @@ test("R3-3: faucetIp caps an IPv6 /48 at 256 /64s per day; a 257th /64 gets 429 
     assert.equal(denied.status, 429);
     const retry = Number(denied.retryAfter);
     assert.ok(retry > 86_000 && retry <= 86_400, `retry-after ${retry}`);
-    // An invalid body from a capped /48 is refused for its body, not the cap.
-    assert.equal((await gw.post("{bad")).status, 400);
-    assert.equal(limiter.stats().deniedPrefix, 1);
+    // The capped /48 is refused before its body is read (faucetIp.peek), so
+    // even a bad body gets 429 and the refusal costs no body read.
+    const reads = gw.state.reads;
+    assert.equal((await gw.post("{bad")).status, 429);
+    assert.equal(gw.state.reads, reads);
+    assert.equal(limiter.stats().deniedPrefix, 2, "both refusals are counted");
     assert.equal(limiter.stats().deniedFull, 0);
     current = bucket("2001:db8:78::1");
     assert.equal((await gw.post(JSON.stringify({ address: ADDRESS }))).status, 200, "another /48 is unaffected");
     current = bucket("198.51.100.9");
     assert.equal((await gw.post(JSON.stringify({ address: ADDRESS }))).status, 200, "IPv4 is unaffected");
     assert.equal(gw.state.sends, 258);
+  } finally { await gw.close(); }
+});
+
+// ---- #1213-1: per-/48 budget on the 60s tables ------------------------------
+// One /48 rotating through 65,536 /64s, using each until refused, at 20
+// attempts per ms; count what is served in one full window [60 s, 120 s).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function servedPerWindow(l: any, n = 65_536, attemptsPerMs = 20) {
+  let i = 0;
+  let ok = 0;
+  for (let t = 0; t < 120_000; t += 1) {
+    for (let j = 0; j < attemptsPerMs; j += 1) {
+      if (l.take(v6(0xaa, i % n), t).allowed) { if (t >= 60_000) ok += 1; } else i += 1;
+    }
+  }
+  return ok;
+}
+
+test("#1213-1: one /48 cycling 65,536 /64s is held to 256 x the per-key limit per window on read, write and relayIp", () => {
+  const limits = api.createGatewayLimits({ env: {}, log: () => {} });
+  const measured: Record<string, number> = {};
+  for (const [name, perKey] of [["read", 240], ["write", 10], ["relayIp", 1200]] as const) {
+    assert.equal(limits[name].limit, perKey, `${name} default per-key limit`);
+    const fresh = api.createGatewayLimits({ env: {}, log: () => {} })[name];
+    const served = servedPerWindow(fresh);
+    measured[name] = served;
+    assert.ok(served <= 256 * perKey, `${name}: ${served} served from one /48 in a window, bound ${256 * perKey}`);
+    assert.ok(served >= 256 * perKey * 0.9, `${name}: the /48 still gets its budget (${served})`);
+    assert.ok(fresh.stats().deniedPrefix > 0, `${name}: budget refusals counted in deniedPrefix`);
+    assert.equal(fresh.stats().evicted, 0, `${name}: nothing outside the /48 is pushed out`);
+  }
+  console.log(`#1213-1 measured per /48 per 60s window: ${JSON.stringify(measured)}`);
+});
+
+test("#1213-1: a neighbour in a /48 under a budget-draining spray is admitted until the budget is spent, and another /48 is untouched", () => {
+  const l = api.createGatewayLimits({ env: {}, log: () => {} }).read;
+  const other = v6(2, 1);
+  let ok = 0;
+  let n = 0;
+  let i = 0;
+  for (let t = 0; t < 180_000; t += 10) {
+    for (let j = 0; j < 20; j += 1) if (!l.take(v6(7, i % 4096), t).allowed) i += 1;
+    if (t % 1_000 === 0) assert.equal(l.take(other, t).allowed, true, `other /48 at ${t}`);
+    if (t % 1_000 === 0 && t >= 60_000) { n += 1; if (l.take(v6(7, 0x8000 + n), t).allowed) ok += 1; }
+  }
+  const pct = (100 * ok) / n;
+  console.log(`#1213-1 neighbour first-request admit in a draining spray: ${pct.toFixed(1)}% (${ok}/${n})`);
+  assert.ok(pct > 30 && pct < 100, `neighbour admit ${pct}%`);
+  // Once spent, the whole /48 is refused until its window ends.
+  const b = new api.WindowLimiter(2, 1_000, 100, { evictOnFull: true, prefixCap: 2 });
+  for (let k = 0; k < 4; k += 1) assert.equal(b.take(v6(9, k >> 1), 10).allowed, true);
+  assert.deepEqual(b.take(v6(9, 5), 20), { allowed: false, retryAfterMs: 990 }, "budget 2 x 2 spent: neighbour refused");
+  assert.deepEqual(b.peek(v6(9, 6), 20), { allowed: false, retryAfterMs: 990 });
+  assert.equal(b.stats().deniedPrefix, 1);
+  assert.equal(b.take(v6(9, 5), 1_010).allowed, true, "new window, new budget");
+});
+
+test("#1213-1: the per-/48 budget table is bounded by maxKeys and only exists on evicting tables", () => {
+  const l = new api.WindowLimiter(5, 60_000, 1_000, { evictOnFull: true, prefixCap: 4 });
+  for (let k = 0; k < 5_000; k += 1) l.take(v6(k, 0), k);
+  assert.equal(l.prefixBudget.size, 1_000);
+  assert.ok(l.hits.size <= 1_000);
+  const deny = new api.WindowLimiter(5, DAY, 1_000, { prefixCap: 4 });
+  for (let k = 0; k < 100; k += 1) deny.take(v6(k, 0), k);
+  assert.equal(deny.prefixBudget.size, 0, "faucetIp-style tables are bounded by the cap itself");
+  const ipv4 = new api.WindowLimiter(5, 60_000, 1_000, { evictOnFull: true, prefixCap: 4 });
+  for (let k = 0; k < 100; k += 1) ipv4.take(bucket(`198.51.100.${k}`), k);
+  assert.equal(ipv4.prefixBudget.size, 0, "IPv4 keys have no /48 budget");
+});
+
+// ---- #1213-4 / #1213-5: faucet spends nothing unless every table allows it --
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function faucetWith(limits: any, send: () => Promise<unknown>, ip = "198.51.100.7") {
+  const state = { reads: 0, sends: 0 };
+  async function readJsonBody(request: IncomingMessage) {
+    state.reads += 1;
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(chunk as Buffer);
+    try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); }
+  }
+  const route = api.createFaucetRoute({ origins: ALLOWED, limits, faucetAddress: `ZYN${"f".repeat(40)}`, readJsonBody, send: async () => { state.sends += 1; return send(); }, log: () => {} });
+  const server: Server = createServer((request, response) => { void route(request, response, ip); });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const post = async (body: string) => { const r = await fetch(`${base}/faucet`, { method: "POST", headers: { "content-type": "application/json" }, body }); await r.arrayBuffer(); return r.status; };
+  return { state, post, close: () => new Promise((done) => server.close(done)) };
+}
+const addr = (n: number) => `ZYN${n.toString(16).padStart(40, "0")}`;
+
+test("#1213-4: when faucetGlobal refuses, faucetIp and faucetAddress are not spent", async () => {
+  const limits = api.createGatewayLimits({ env: {}, log: () => {} });
+  for (let i = 0; i < 200; i += 1) limits.faucetGlobal.take("global");
+  const gw = await faucetWith(limits, async () => ({ txid: "t" }));
+  try {
+    for (let i = 0; i < 5; i += 1) assert.equal(await gw.post(JSON.stringify({ address: addr(100 + i) })), 429);
+    assert.equal(gw.state.sends, 0);
+    assert.equal(limits.faucetIp.hits.size, 0, "no per-IP slot spent");
+    assert.equal(limits.faucetAddress.hits.size, 0, "no per-address slot spent");
+  } finally { await gw.close(); }
+  // A spent address refuses without spending the IP or global quota either.
+  const l2 = api.createGatewayLimits({ env: {}, log: () => {} });
+  l2.faucetAddress.take(addr(1));
+  const gw2 = await faucetWith(l2, async () => ({ txid: "t" }));
+  try {
+    assert.equal(await gw2.post(JSON.stringify({ address: addr(1) })), 429);
+    assert.equal(l2.faucetIp.hits.size, 0);
+    assert.equal(l2.faucetGlobal.hits.size, 0);
+  } finally { await gw2.close(); }
+});
+
+test("#1213-4: a failed send refunds faucetIp, faucetAddress and faucetGlobal", async () => {
+  const limits = api.createGatewayLimits({ env: {}, log: () => {} });
+  let fail = true;
+  const gw = await faucetWith(limits, async () => { if (fail) throw new Error("node down"); return { txid: "t" }; });
+  try {
+    for (let i = 0; i < 5; i += 1) assert.equal(await gw.post(JSON.stringify({ address: addr(1) })), 503);
+    assert.equal(limits.faucetIp.hits.size, 0);
+    assert.equal(limits.faucetAddress.hits.size, 0);
+    assert.equal(limits.faucetGlobal.hits.size, 0);
+    fail = false;
+    assert.equal(await gw.post(JSON.stringify({ address: addr(1) })), 200, "the same address and IP can still be served");
+    assert.equal(limits.faucetIp.hits.get("198.51.100.7").count, 1);
+    assert.equal(limits.faucetGlobal.hits.get("global").count, 1);
+  } finally { await gw.close(); }
+});
+
+test("#1213-5: faucetAttempt caps /faucet attempts per IP per minute before the body is read", async () => {
+  const limits = api.createGatewayLimits({ env: {}, log: () => {} });
+  assert.equal(limits.faucetAttempt.limit, api.FAUCET_ATTEMPTS_PER_MINUTE);
+  assert.equal(limits.faucetAttempt.windowMs, 60_000);
+  const gw = await faucetWith(limits, async () => ({ txid: "t" }));
+  try {
+    for (let i = 0; i < api.FAUCET_ATTEMPTS_PER_MINUTE; i += 1) assert.equal(await gw.post("{bad"), 400);
+    const reads = gw.state.reads;
+    assert.equal(await gw.post(JSON.stringify({ address: addr(1) })), 429);
+    assert.equal(gw.state.reads, reads, "refused before the body is read");
+    assert.equal(limits.faucetIp.hits.size, 0, "attempts never touch the day quota");
   } finally { await gw.close(); }
 });

@@ -41,18 +41,18 @@ The gateway bounds how many distinct client identities each fixed window may tra
 | `relayIp` (`/relay/v1/*`) | 60s | 10k | **Evict oldest** | 256 |
 | `faucetIp` | 1 day | 50k | **Deny** new keys (live keys keep their counts) | 256 live `/64`s (deny) |
 | `faucetAddress` | 1 day | 50k | **Deny** new keys | n/a (keys are addresses) |
+| `faucetAttempt` (every `POST /faucet`, before the body is read) | 60s, 10 per IP | 10k | **Evict oldest** | 256 |
 | `faucetGlobal` / `snapshot` | 1h | 1 (global) | Deny | n/a |
 
 Client identity is one key per request: on Render, `CF-Connecting-IP`; behind a loopback proxy, the rightmost `X-Forwarded-For` entry; otherwise the socket peer. IPv6 is bucketed per `/64`.
 
 **IPv6 /48 sub-cap.** At most 256 live keys are kept per IPv6 `/48` on the 60-second tables and on `faucetIp`. IPv4 and non-IPv6 keys have no sub-cap (an IPv4 `/24` cap is not implemented).
 
-- On the 60-second tables, a new `/64` from a `/48` that already has 256 live keys replaces that `/48`'s own oldest key, so it is admitted and nothing outside that `/48` is pushed out. A neighbour inside a sprayed `/48` therefore gets in on its first request, but the sprayer can reset its own per-key quotas by churning `/64`s (the same tradeoff as table-wide eviction, below).
-- On `faucetIp`, a new `/64` from a full `/48` is refused with HTTP 429 and a `Retry-After` set to the expiry of that `/48`'s oldest key, the first moment a slot can free. On a day window that can be most of a day. It is never evicted, so a `/48` cannot reset day quotas by eviction.
+On the 60-second tables (`read`, `write`, `relayIp`), a new `/64` from a `/48` that already has 256 live keys replaces that `/48`'s own oldest key, so it is admitted and keys outside that `/48` are never pushed out. Each `/48` also has a per-window budget of 256 × the per-key limit (61,440 reads, 2,560 transactions, 307,200 relay requests per minute at the defaults); once a `/48` spends it, every `/64` in that `/48`, neighbours included, gets HTTP 429 until the window ends.
 
-Security review note. The first clause applies as written to `faucetIp`; on the 60-second tables, new `/64`s are admitted by replacing the `/48`'s oldest key, and the second clause is the cost of that: Under a sustained spray from the same /48, new /64s from that /48 stay mostly refused; per-key limits weaken when the table turns over faster than once per window.
+On `faucetIp`, a new `/64` from a `/48` that already has 256 live keys is refused with HTTP 429 and a `Retry-After` at the expiry of that `/48`'s oldest key, which can be up to a day. Keys are never evicted there, so neighbours in a sprayed `/48` stay refused until then.
 
-**Faucet quota and body validation.** `POST /faucet` checks Origin and Content-Type, reads and validates the body, and only then takes the per-IP quota, so a malformed, oversized or invalid body never spends it. An IP that has already used its whole day is still refused before its body is read.
+**Faucet quota and body validation.** `POST /faucet` checks Origin and Content-Type, counts the attempt in `faucetAttempt` (10 per IP per minute), and refuses an IP whose `faucetIp` quota is already spent, or whose `/48` is at its cap, before reading its body. It then reads and validates the body, checks `faucetIp`, `faucetAddress` and `faucetGlobal`, and only if all three allow it spends all three at once, so a malformed, oversized or invalid body, or a refusal by any one table, spends none of the day quotas. If the send fails, all three are refunded.
 
 **Eviction tradeoff (60s tables).** Evicting the oldest live key to admit a new one means an attacker can push out a victim's entry and reset that victim's per-key quota. Deny-on-full avoided that, but at a 10k cap a spray of about 170 new keys per second locked every new client out of rate-limited GETs for as long as it ran. Eviction runs only to admit a new key. Day-window faucet tables keep deny-on-full so a spray cannot reset a day's faucet quota by eviction.
 
@@ -62,7 +62,7 @@ Security review note. The first clause applies as written to `faucetIp`; on the 
 |---|---|
 | `size`, `maxKeys` | Live keys and the table bound |
 | `deniedFull` | New keys refused because a deny-on-full table was full |
-| `deniedPrefix` | New keys refused by the `/48` sub-cap (`faucetIp`) |
+| `deniedPrefix` | Requests refused by the `/48` sub-cap (`faucetIp`) or because a `/48` spent its per-window budget (60-second tables) |
 | `evicted` | Keys evicted because a 60-second table was full |
 | `evictedPrefix` | Keys evicted by the `/48` sub-cap (60-second tables) |
 | `fill`, `fillAlerts` | `ok`, `high` (80% of `maxKeys` or more) or `full`, and how many alerts fired (not on the single-key `faucetGlobal` and `snapshot` tables) |
