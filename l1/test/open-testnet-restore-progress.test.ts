@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { anchorForNetworkDir } from "./helpers/restore-anchor-fixture.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -45,10 +46,13 @@ test("restore reports progress for every validator copy step: copied files, reco
     const bundle = await sourceBundle(root, "zyron-restore-progress-testnet-1");
     const target = join(root, "restored");
     const events: Json[] = [];
+    // The restore writes into its staging directory (S2-3 T1) and renames it
+    // onto the target only on success, so the ticks are observed there.
+    const staging = api.restoreStagingDir(target);
     const onProgress = (event?: Json) => {
-      events.push({ ...(event ?? {}), present: event?.validator && event?.file ? existsSync(join(target, `data-${event.validator}`, event.file)) : undefined, marker: existsSync(join(target, "network.json")) });
+      events.push({ ...(event ?? {}), present: event?.validator && event?.file ? existsSync(join(staging, `data-${event.validator}`, event.file)) : undefined, marker: existsSync(join(staging, "network.json")) || existsSync(join(target, "network.json")) });
     };
-    const restored = await api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress });
+    const restored = await api.restoreNetwork(target, bundle, bundle.genesis.chainId, { onProgress, restoreAnchor: await anchorForNetworkDir(join(root, "source")) });
     assert.equal(restored.height, bundle.blocks.length);
     assert.ok(await api.readNetworkMarker(target));
     assert.ok(events.every((event) => !event.marker), "every progress tick comes before the completion marker");

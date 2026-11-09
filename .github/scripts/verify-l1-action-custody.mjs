@@ -59,4 +59,12 @@ for (const required of ['node-version: [22, 24]', 'npm audit --omit=dev --audit-
   if (!workflow.includes(required)) throw new Error(`Required Standalone L1 security check missing: ${required}`);
 }
 
+// S2-3 T1 pull_request_target checker: exact allowlisted shape (pins, trigger,
+// read-only token, no persisted credentials, head read as data only).
+const { verifyT1AppendOnlyWorkflow, verifyL1JobT1Prefix, T1_WORKFLOW_PATH } = await import('./verify-l1-t1-trust-append-only-custody.mjs');
+verifyT1AppendOnlyWorkflow(await readFile(T1_WORKFLOW_PATH, 'utf8'));
+// The l1.yml T1 step (defence in depth): ASCII bytes, and the l1 job parsed
+// structurally must start with checkout, setup-node and the exact T1 step.
+verifyL1JobT1Prefix(workflow);
+
 console.log('l1-action-custody-policy: ok');

@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - '.github/workflows/l1.yml'
+      - '.github/workflows/l1-t1-trust-append-only.yml'
+      - '.github/scripts/verify-l1-t1-trust-append-only-custody.mjs'
+      - '.github/scripts/test-l1-t1-trust-append-only-custody-mutations.mjs'
       - '.github/scripts/verify-l1-action-custody.mjs'
       - '.github/workflows/l1-action-custody-policy.yml'
   push:
@@ -11,6 +14,9 @@ on:
       - main
     paths:
       - '.github/workflows/l1.yml'
+      - '.github/workflows/l1-t1-trust-append-only.yml'
+      - '.github/scripts/verify-l1-t1-trust-append-only-custody.mjs'
+      - '.github/scripts/test-l1-t1-trust-append-only-custody-mutations.mjs'
       - '.github/scripts/verify-l1-action-custody.mjs'
       - '.github/workflows/l1-action-custody-policy.yml'
 
@@ -31,3 +37,5 @@ jobs:
           persist-credentials: false
       - name: Verify required Standalone L1 action custody
         run: node .github/scripts/verify-l1-action-custody.mjs
+      - name: Verify the T1 pull_request_target policy rejects unsafe shapes
+        run: node .github/scripts/test-l1-t1-trust-append-only-custody-mutations.mjs

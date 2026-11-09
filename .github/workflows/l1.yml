@@ -122,12 +122,48 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history for the T1 append-only merge-base / push comparison.
+          fetch-depth: 0
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: l1/package-lock.json
+      # S2-3 T1: l1/trust/ is append-only. DEFENCE IN DEPTH only: this file is
+      # the change's own workflow, so a PR can edit it. The tamper-proof check
+      # is l1-t1-trust-append-only.yml (pull_request_target on main). This
+      # step runs before npm ci (no install script of the change has run) and
+      # uses the copy of the checker from main (the merge base for a PR, the
+      # previous main for a push), except when that ref has none yet
+      # (bootstrap, logged). PRs are compared with the merge base with main.
+      - name: T1 trust files are append-only (trusted checker from main)
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        shell: bash
+        env:
+          T1_EVENT: ${{ github.event_name }}
+          T1_PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --no-tags --quiet --unshallow origin; fi
+          git fetch --no-tags --quiet origin '+refs/heads/main:refs/remotes/origin/main'
+          if [ "$T1_EVENT" = pull_request ]; then
+            trusted_ref=$(git merge-base origin/main HEAD)
+            mode=(--merge-base origin/main)
+          else
+            trusted_ref="$T1_PUSH_BEFORE"
+            if [[ "$trusted_ref" =~ ^0+$ ]] || ! git rev-parse --verify --quiet "$trusted_ref^{commit}" >/dev/null; then trusted_ref=HEAD^1; fi
+            mode=(--push-before "$T1_PUSH_BEFORE")
+          fi
+          checker="$RUNNER_TEMP/t1-trust-append-only.trusted.mjs"
+          if git cat-file -e "$trusted_ref:l1/scripts/t1-trust-append-only.mjs" 2>/dev/null; then
+            git show "$trusted_ref:l1/scripts/t1-trust-append-only.mjs" > "$checker"
+            echo "Running the trusted checker from $trusted_ref"
+          else
+            echo "::warning::Bootstrap: $trusted_ref has no l1/scripts/t1-trust-append-only.mjs yet; running this change's own copy"
+            cp scripts/t1-trust-append-only.mjs "$checker"
+          fi
+          node "$checker" "${mode[@]}"
       - name: Install locked dependencies
         run: npm ci
       - name: Typecheck

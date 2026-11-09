@@ -14,6 +14,10 @@
 // TEST keys, finalized blocks). `run --init-if-missing --restore-url <url>`
 // restores a missing directory from such a bundle (re-validating every block)
 // before falling back to a fresh genesis.
+// S2-3 T1: the restore must also be bound to an independently sealed summary,
+// configured only by files pinned in l1/trust/ (summary keys, revoke/supersede
+// and high-water records, seal location and live quorum validators); otherwise
+// it is refused and start-up stops. See docs/specs/s2-3-t1-sealed-summary.md.
 //
 // Startup on hosts with a port scan (Render): the gateway binds --port / $PORT
 // before anything slow happens. While the snapshot is downloaded, decrypted and
@@ -32,17 +36,18 @@ import { allocateValidatorBasePort } from "./open-testnet-ports.mjs";
 import { ensureGatewayMallocArena } from "./open-testnet/malloc-arena.mjs";
 import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
-import { createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createDecipheriv, createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { Worker } from "node:worker_threads";
 import { SNAPSHOT_MAGIC, sealSnapshot, snapshotKey } from "./open-testnet/snapshot-seal.mjs";
 import { verifySnapshotBlocks } from "./open-testnet/snapshot-verify.mjs";
 import { HistoryFileError, createHistoryFile, resumeHistoryFile } from "./open-testnet/history-file.mjs";
+import { bootRestoreTrustDir, createRestoreAnchor, summaryFromValidatorLogs } from "./open-testnet/restore-anchor.mjs";
 import { createServer } from "node:http";
 import { createReadStream, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const l1Root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -53,6 +58,10 @@ const { addressFromPublicKey, generatePrivateKey, publicKeyFromPrivate } = await
 const { createProtocolUpgrade, createProtocolUpgradeApproval, createTransfer } = await import(dist("transaction.js"));
 const { expectedValidator } = await import(dist("block.js"));
 const { canonicalJson } = await import(dist("codec.js"));
+const restoreAnchorApi = await import(dist("sealed-summary.js"));
+/** Verifies a raw sealed-summary text against pinned keys (tooling, RFC 8032 vector test). */
+export const verifyRestoreSeal = restoreAnchorApi.verifyRestoreSeal;
+const { RESTORE_ANCHOR_CODES, RestoreAnchorError, assertReplayMatchesSummary, isRestoreAnchorError, restoreOracleSetHash, restoreStateFieldsOf, restoreValidatorSetHash, verifyRestoreAnchor } = restoreAnchorApi;
 const { buildCommit } = await import(dist("build-info.js"));
 const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist("tokenomics.js"));
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
@@ -1467,7 +1476,14 @@ export function capPeerStatus(status, watermark) {
 
 // ---- sealed state snapshots (TEST keys + public blocks) ---------------------------
 export { sealSnapshot, verifySnapshotBlocks };
+// S2-3: an unreadable snapshot (truncated, bad GCM tag, bad gzip/JSON) is
+// refused with RESTORE_SNAPSHOT_CORRUPT; the message is kept.
 export function openSnapshot(bytes, secret) {
+  try { return openSnapshotBytes(bytes, secret); } catch (error) {
+    throw new RestoreAnchorError(RESTORE_ANCHOR_CODES.snapshotCorrupt, error instanceof Error ? error.message : String(error));
+  }
+}
+function openSnapshotBytes(bytes, secret) {
   const header = Buffer.from(`${SNAPSHOT_MAGIC}\n`);
   assert.ok(bytes.length > header.length + 28 && bytes.length <= MAX_SNAPSHOT_BYTES, "snapshot size out of range");
   assert.ok(bytes.subarray(0, header.length).equals(header), "not an open-testnet state snapshot");
@@ -1518,9 +1534,80 @@ export async function copyFileWithProgress(source, destination, onChunk = () => 
     await handle.close();
   }
 }
-export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {} } = {}) {
+// S2-3 (trust anchor T1, docs/specs/s2-3-t1-sealed-summary.md): a restore is
+// bound to an independently sealed summary (restoreAnchor). Without one, or if
+// any check fails, the restore is refused with a distinct error code before
+// anything is written (checks that need the replay run before network.json).
+// There is no fallback to the snapshot's own content. Refusals are never local
+// I/O errors, so restoreNetworkWithLocalRetry never retries them.
+function restoreBundleView(bundle) {
+  const { genesis, network, keys, blocks } = bundle;
+  // Validator, oracle and faucet keys (public keys, their x-coordinates and
+  // addresses) are never restore trust anchors.
+  const rolePublicKeys = [...(genesis?.validators ?? []).map((v) => v?.publicKey), ...(genesis?.activityOracles ?? [])].filter((key) => typeof key === "string");
+  try { rolePublicKeys.push(publicKeyFromPrivate(keys.faucet)); } catch { /* checked before this view is built */ }
+  const ids = new Set([...(genesis?.validators ?? []).map((v) => v?.address), network?.faucetAddress].filter((id) => typeof id === "string"));
+  for (const publicKey of rolePublicKeys) { try { ids.add(addressFromPublicKey(publicKey)); } catch { /* not a key */ } }
+  const last = Array.isArray(blocks) ? blocks.at(-1) : undefined;
+  return {
+    chainId: genesis?.chainId, genesisHash: network?.genesisHash, height: Array.isArray(blocks) ? blocks.length : 0, tipHash: last?.hash,
+    validatorSetHash: restoreValidatorSetHash(genesis?.validators ?? []), oracleSetHash: restoreOracleSetHash(genesis?.activityOracles ?? []),
+    chainKeys: { publicKeys: new Set(rolePublicKeys), ids, xCoordinates: new Set(rolePublicKeys.map((key) => key.slice(0, 64))) }
+  };
+}
+// The restore is written into a staging directory beside the target
+// (<dir>.restore-staging) and renamed onto the target only after every check
+// passed and the completion marker is written, so a refusal or a crash never
+// leaves restore output at the target. A staging directory left by a crash is
+// moved aside (incomplete: like any incomplete network directory; marked or
+// unexpected: renamed to <staging>.leftover-<ms>-<pid>), never deleted.
+// L4-R1: at most MAX_RESTORE_STAGING_LEFTOVERS such leftover directories are
+// kept beside the target. With that many already there, the restore is
+// refused (RESTORE_STAGING_LEFTOVER_LIMIT) before anything is renamed or
+// written, so repeated crashes cannot fill the disk; an operator inspects and
+// removes them. Nothing is ever deleted automatically.
+export const MAX_RESTORE_STAGING_LEFTOVERS = 3;
+export function restoreStagingDir(dir) { return `${resolve(dir)}.restore-staging`; }
+async function countRestoreStagingLeftovers(staging) {
+  const prefix = `${basename(staging)}.leftover-`;
+  let names;
+  try { names = await readdir(dirname(staging)); } catch (error) { if (error?.code === "ENOENT") return 0; throw error; }
+  return names.filter((name) => name.startsWith(prefix)).length;
+}
+async function prepareRestoreStaging(dir) {
+  const staging = restoreStagingDir(dir);
+  // An incomplete staging directory is moved aside like any incomplete
+  // network directory (bounded holders, never deleted).
+  let aside = false;
+  try { aside = await moveAsideIncompleteNetworkDir(staging); } catch { aside = false; }
+  if (aside) console.error(`moved a restore staging directory left by an interrupted start-up to ${aside}`);
+  // Anything still there (a staging directory that already holds a completion
+  // marker because a crash hit between the marker and the final rename, or one
+  // move-aside refused) is renamed aside under a timestamp suffix, never
+  // deleted and never promoted; the restore then runs again from the bundle.
+  if (await lstat(staging).then(() => true, () => false)) {
+    const leftovers = await countRestoreStagingLeftovers(staging);
+    if (leftovers >= MAX_RESTORE_STAGING_LEFTOVERS) {
+      throw new RestoreAnchorError(RESTORE_ANCHOR_CODES.stagingLeftoverLimit, `${leftovers} leftover restore staging directories are already kept beside ${staging} (limit ${MAX_RESTORE_STAGING_LEFTOVERS}); inspect and remove them before restoring again (nothing is deleted automatically)`);
+    }
+    for (let attempt = 0; ; attempt += 1) {
+      const leftover = `${staging}.leftover-${Date.now()}-${process.pid}${attempt ? `-${attempt}` : ""}`;
+      if (await lstat(leftover).then(() => true, () => false)) continue;
+      await rename(staging, leftover);
+      console.error(`moved a leftover restore staging directory aside to ${leftover}`);
+      break;
+    }
+  }
+  return staging;
+}
+async function promoteRestoreStaging(staging, dir) {
+  // rename(2) replaces an empty target directory; a non-empty one fails.
+  await rename(staging, resolve(dir));
+}
+export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress = () => {}, restoreAnchor } = {}) {
   assert.equal(bundle?.format, SNAPSHOT_MAGIC, "unknown snapshot format");
   const { genesis, network, keys, blocks } = bundle;
+  if (!restoreAnchor) throw new RestoreAnchorError(RESTORE_ANCHOR_CODES.anchorMissing, "no independent restore anchor is configured");
   assertTestnetChainId(genesis.chainId);
   if (expectedChainId) assert.equal(genesis.chainId, expectedChainId, "snapshot is for another chain ID");
   assert.equal(network.chainId, genesis.chainId);
@@ -1532,6 +1619,28 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   assert.equal(addressFromPublicKey(publicKeyFromPrivate(keys.faucet)), network.faucetAddress, "snapshot faucet key mismatch");
   assert.equal(genesis.publicDistributionRelease?.address, network.faucetAddress, "snapshot public-distribution release does not match the faucet");
   assert.ok(Array.isArray(blocks) && blocks.length >= V6_ACTIVATION_HEIGHT - 1, "snapshot has too few blocks");
+  const anchored = await verifyRestoreAnchor(restoreAnchor, restoreBundleView(bundle));
+  onProgress({ step: "anchor-verified" });
+  const staging = await prepareRestoreStaging(dir);
+  try {
+    const restored = await writeRestoredNetwork(staging, bundle, anchored, onProgress);
+    await promoteRestoreStaging(staging, dir);
+    return restored;
+  } catch (error) {
+    if (isLocalIoError(error)) {
+      // R37-1072-L1: the partial output goes where the retry / boot path
+      // moves it aside (never deleted).
+      await rename(staging, resolve(dir)).catch(() => {});
+    } else {
+      // A refusal (or any snapshot error): this attempt's own staging output
+      // is removed; the target was never touched.
+      await rm(staging, { recursive: true, force: true });
+    }
+    throw error;
+  }
+}
+async function writeRestoredNetwork(dir, bundle, anchored, onProgress) {
+  const { genesis, network, keys, blocks } = bundle;
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
   await mkdir(join(dir, "keys"), { mode: 0o700 });
@@ -1544,8 +1653,14 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   const firstData = join(dir, `data-${first}`);
   await mkdir(firstData, { mode: 0o700 });
   const store = await ChainStore.open(genesis, firstData);
-  for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress({ step: "replay-block" }); }
+  try {
+    for (const block of blocks) { await store.commitFinalizedBlock(block); onProgress({ step: "replay-block" }); }
+  } catch (error) {
+    if (isLocalIoError(error)) throw error;
+    throw new RestoreAnchorError(RESTORE_ANCHOR_CODES.snapshotCorrupt, error instanceof Error ? error.message : String(error));
+  }
   assert.equal(store.chain.height, blocks.length, "snapshot replay height mismatch");
+  assertReplayMatchesSummary(anchored.summary, restoreStateFieldsOf(store.chain));
   const checkpoint = await store.writeRecoveryCheckpoint();
   onProgress({ step: "checkpoint" });
   const replayed = new Map();
@@ -1577,12 +1692,15 @@ export async function restoreNetwork(dir, bundle, expectedChainId, { onProgress 
   // R28-1059-L1: every copy (not only the replayed one) is checked again
   // right before the completion marker.
   for (const name of VALIDATOR_NAMES) await verifyFiles(name, join(dir, `data-${name}`));
+  // The replayed state is checked against the sealed summary once more right
+  // before the completion marker.
+  assertReplayMatchesSummary(anchored.summary, restoreStateFieldsOf(store.chain));
   await writeNetworkMarker(dir, network);
   // The replayed chain (in memory) and its blocks are the start of the
   // gateway's verified snapshot history, so a cold start does not validate
   // the restored history a second time before the first snapshot.
   const verifiedHistory = { chain: store.chain, blocks };
-  return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash, verifiedHistory };
+  return { chainId: genesis.chainId, genesisHash: network.genesisHash, height: blocks.length, tipHash: checkpoint.tipHash, verifiedHistory, anchor: { keyId: anchored.keyId, summaryDigest: anchored.summaryDigest } };
 }
 
 // R37-1072-L1: a local filesystem error while the verified snapshot is written
@@ -1613,10 +1731,10 @@ export function isLocalIoError(error) {
   }
   return false;
 }
-export async function restoreNetworkWithLocalRetry(dir, bundle, expectedChainId, { onProgress = () => {}, restore = restoreNetwork, moveAside = moveAsideIncompleteNetworkDir, sleepImpl = sleep, log = (line) => console.error(line), delays = LOCAL_RESTORE_RETRY_DELAYS_MS } = {}) {
+export async function restoreNetworkWithLocalRetry(dir, bundle, expectedChainId, { onProgress = () => {}, restoreAnchor, restore = restoreNetwork, moveAside = moveAsideIncompleteNetworkDir, sleepImpl = sleep, log = (line) => console.error(line), delays = LOCAL_RESTORE_RETRY_DELAYS_MS } = {}) {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await restore(dir, bundle, expectedChainId, { onProgress });
+      return await restore(dir, bundle, expectedChainId, { onProgress, restoreAnchor });
     } catch (error) {
       if (!isLocalIoError(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
@@ -2602,8 +2720,29 @@ async function smoke() {
     assert.throws(() => openSnapshot(sealed, "x".repeat(40)));
     const snapHeight = Number(snapshotResponse.headers.get("x-zyron-snapshot-height"));
     await network.shutdown(); network = undefined;
-    const restored = await restoreNetwork(join(dir, "restored"), openSnapshot(sealed, smokeSecret), info.chainId);
+    // S2-3 T1: the restore needs a sealed summary. The smoke builds it from
+    // the validators' own finalized logs (a quorum tip match at the snapshot
+    // height, state from v1's own log, never from the snapshot) and signs it
+    // with a TEST key generated here and dropped afterwards (never pinned).
+    const smokeKey = generateKeyPairSync("ed25519");
+    const smokePublic = restoreAnchorApi.ed25519RawPublicKeyHex(smokeKey.publicKey);
+    const smokeKeyId = restoreAnchorApi.restoreKeyId(smokePublic);
+    const genesisJson = JSON.parse(await readFile(join(dir, "net", "genesis.json"), "utf8"));
+    const { summary: smokeSummary, quorumTip: smokeQuorumTip } = await summaryFromValidatorLogs({
+      genesis: genesisJson, genesisHash: info.genesisHash, height: snapHeight, workDir: join(dir, "summary-replay"),
+      logPaths: VALIDATOR_NAMES.map((name) => join(dir, "net", `data-${name}`, "blocks.ndjson")),
+      provenance: { publisher: "open-testnet smoke (TEST key)", workflow: "l1/scripts/open-testnet.mjs smoke", commit: "0".repeat(40) }
+    });
+    const smokeSeal = restoreAnchorApi.restoreSealText(smokeKeyId, restoreAnchorApi.signRestoreSummary(smokeKeyId, smokeSummary, smokeKey.privateKey), smokeSummary);
+    const smokeDigest = restoreAnchorApi.restoreSummaryDigest(smokeKeyId, smokeSummary);
+    const smokeAnchor = {
+      pinnedKeys: [{ keyId: smokeKeyId, publicKey: smokePublic, revoked: false }], readSeal: async () => smokeSeal, readSuperseded: async () => [],
+      readHighWater: async () => ({ height: smokeSummary.height, summaryDigest: smokeDigest, tipHash: smokeSummary.tipHash }), readQuorumTip: async () => smokeQuorumTip, timeoutMs: 30_000
+    };
+    await assert.rejects(restoreNetwork(join(dir, "refused"), openSnapshot(sealed, smokeSecret), info.chainId), (error) => error?.code === RESTORE_ANCHOR_CODES.anchorMissing);
+    const restored = await restoreNetwork(join(dir, "restored"), openSnapshot(sealed, smokeSecret), info.chainId, { restoreAnchor: smokeAnchor });
     assert.equal(restored.genesisHash, info.genesisHash);
+    assert.equal(restored.anchor.keyId, smokeKeyId);
     network = await runNetwork(join(dir, "restored"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("smoke"), log: false, stateSecret: smokeSecret, persistence: { mode: "snapshot-restore" }, verifiedHistory: restored.verifiedHistory });
     const base2 = `http://127.0.0.1:${network.port}`;
     await until("restored chain finalizes past the snapshot", async () => { const s = await (await fetch(`${base2}/status`)).json(); return s.genesisHash === info.genesisHash && s.height > snapHeight; }, 360_000);
@@ -2670,13 +2809,21 @@ if (!invokedDirectly) {
           assert.equal(response.status, 200, `snapshot download returned ${response.status}`);
           const sealed = response.bytes;
           console.log(`snapshot downloaded (${sealed.length} bytes)`);
+          // S2-3 T1: the restore is bound to the sealed summary, the keys and
+          // records pinned in l1/trust/ (PR-only files of the checked-out
+          // release ref) and a live quorum tip match. The anchor comes only
+          // from those files (never from the environment, options, the bundle
+          // or the gateway). Without it (the shipped placeholder pins no key)
+          // the restore is refused before the snapshot is even decrypted and
+          // start-up stops (fail closed below; never a fresh TEST genesis).
+          const restoreAnchor = await createRestoreAnchor({ chainId, trustDir: bootRestoreTrustDir() });
           boot.enter("decrypt");
           const bundle = openSnapshot(sealed, stateSecret);
           boot.enter("replay");
-          const restored = await restoreNetworkWithLocalRetry(dir, bundle, chainId, { onProgress: boot.progress });
+          const restored = await restoreNetworkWithLocalRetry(dir, bundle, chainId, { onProgress: boot.progress, restoreAnchor });
           persistence = { mode: "snapshot-restore", restoredHeight: restored.height, restoredAtMs: Date.now() };
           verifiedHistory = restored.verifiedHistory;
-          console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}`);
+          console.log(`restored ${restored.chainId} genesis ${restored.genesisHash} at height ${restored.height}, bound to sealed summary ${restored.anchor.summaryDigest} (key ${restored.anchor.keyId})`);
         }
       } catch (error) {
         if (error?.localIo) {
@@ -2725,6 +2872,6 @@ if (!invokedDirectly) {
   await smoke();
   process.exit(0);
 } else {
-  console.error("usage: open-testnet.mjs init --dir <dir> [--chain-id id] | run --dir <dir> [--port n] | smoke");
+  console.error("usage: open-testnet.mjs init --dir <dir> [--chain-id id] | run --dir <dir> [--port n] [--init-if-missing --restore-url <url>] | smoke");
   process.exit(2);
 }

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { anchorForNetworkDir } from "./helpers/restore-anchor-fixture.js";
 
 const l1Root = fileURLToPath(new URL("../../", import.meta.url));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,7 +81,7 @@ test("snapshot restore reports progress for every replayed block and every valid
     const blocks = (await readFile(join(source, "data-v1", "blocks.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     const bundle = { format: "ZYRON-OPEN-TESTNET-STATE-V1", genesis: await json(join(source, "genesis.json")), network: await json(join(source, "network.json")), keys, blocks };
     let calls = 0;
-    const restored = await api.restoreNetwork(join(root, "restored"), bundle, bundle.genesis.chainId, { onProgress: () => { calls += 1; } });
+    const restored = await api.restoreNetwork(join(root, "restored"), bundle, bundle.genesis.chainId, { onProgress: () => { calls += 1; }, restoreAnchor: await anchorForNetworkDir(source) });
     assert.equal(restored.height, blocks.length);
     assert.ok(calls >= blocks.length + 3, `progress reported ${calls} times for ${blocks.length} blocks`);
   } finally {
