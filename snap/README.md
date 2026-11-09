@@ -100,6 +100,22 @@ using l1's `signCanonicalDomain` construction, after a dialog. Returns
 `{ domain, payload, address, publicKey, signature }`. Verify it with l1's
 `verifyCanonicalDomain(domain, payload, signature, publicKey)`.
 
+### Send warnings and `zyron_setWarningThreshold`
+
+Before the confirmation dialog for `zyron_signTransaction` and `zyron_sendTransfer`, the Snap runs
+the same local send-safety checks as the phone wallet and `l1 send-check` (`src/send-warnings.ts`, a
+port of `l1/src/send-warnings.ts` kept equal by `test/send-warnings.test.ts`):
+
+- **Self-send** is refused before any dialog.
+- **First-time recipient**, **lookalike address** (the differing characters are shown in bold and
+  brackets next to the known address) and **large amount** (at or above your threshold) are shown in
+  the dialog. They are advisory: approving the dialog acknowledges them.
+
+The sent-to history (newest 200 receivers) and the threshold live only in the Snap's encrypted
+state (`snap_manageState`). They hold no key material and are never sent anywhere.
+`zyron_setWarningThreshold` takes exactly `{ thresholdAtoms }` (integer atoms, or `null` to turn the
+warning off) and asks for confirmation before saving.
+
 ## Derivation path (provisional)
 
 ```

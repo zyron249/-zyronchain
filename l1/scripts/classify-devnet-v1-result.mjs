@@ -3,9 +3,12 @@
 // (backlog P1-04). It never changes the result: the devnet step keeps its own
 // exit status and this script only explains it.
 //
-// Protocol v1 keeps the legacy F-01 consensus split, so the two-validator v1
-// devnet stalls in about half of the runs. Only a failure that matches the
-// full stall signature below is reported as that known flake. Any other
+// Protocol v1 keeps the known F-01 round-timer split: which validator starts
+// its round timer first decides whether finality stalls, so the two-validator
+// v1 devnet stalls in about half of the runs. It is a protocol defect, not
+// test flakiness; the fix is protocol v6. #1146 makes the CLI refuse
+// protocol-1 chains (tracked in #1147). Only a failure that matches the
+// full stall signature below is reported as that known F-01 stall. Any other
 // failure is reported as a real regression, and this script then exits
 // non-zero as well.
 // The F-01 fix is protocol v6, which the `local-devnet-v6` job exercises.
@@ -84,11 +87,11 @@ export function classifyDevnetV1Result(text, outcome, validatorLogs) {
   const evidence = knownStallEvidence(error, validatorLogs);
   const shown = (error ?? 'no error message found').replace(/ last-status=.*$/, '').slice(0, 160);
   if (evidence.ok) {
-    return { kind: 'known-flake', level: 'warning', title: 'Known protocol-v1 flake (F-01), not a regression', error,
-      message: `local-devnet runs protocol v1, which has the legacy F-01 split and passes about 50% of the time. This failure ("${shown}") matches the known v1 stall: both validators agree at height ${evidence.height} and the round-skip quorum fails at height ${evidence.height + 1}. It is informational and not a required check; local-devnet-v6 runs the F-01 fix. See ${DOCS}.` };
+    return { kind: 'known-flake', level: 'warning', title: 'Protocol-v1 F-01 round-timer stall (fixed in v6), not a regression', error,
+      message: `local-devnet runs protocol v1, which has the known F-01 round-timer split that stalls finality (about 50% of runs). This failure ("${shown}") matches the F-01 round-timer stall: both validators agree at height ${evidence.height} and the round-skip quorum fails at height ${evidence.height + 1}. It is informational and not a required check; the fix is protocol v6 (local-devnet-v6); #1146 makes the CLI refuse protocol-1 chains (#1147). See ${DOCS}.` };
   }
-  return { kind: 'regression', level: 'error', title: 'Protocol-v1 devnet: NOT the known F-01 flake', error,
-    message: `This failure ("${shown}") does not match the known protocol-v1 stall (${evidence.reason}). Treat it as a real regression and investigate. See ${DOCS}.` };
+  return { kind: 'regression', level: 'error', title: 'Protocol-v1 devnet: NOT the F-01 round-timer stall', error,
+    message: `This failure ("${shown}") does not match the protocol-v1 F-01 round-timer stall (${evidence.reason}). Treat it as a real regression and investigate. See ${DOCS}.` };
 }
 
 // GitHub workflow commands must not contain raw newlines, % or :: in the title.

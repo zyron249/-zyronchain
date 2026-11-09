@@ -13,7 +13,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Zyron Wallet" />
   <meta name="format-detection" content="telephone=no" />
-  <meta name="zyron-build" content="app=2cfb3983df760ba0;release=7396548f77355d74e08f1c8967aff903be643e1f" />
+  <meta name="zyron-build" content="app=b89a4b41cd5e8efe;release=500b54a4d7af87a8a060129a6b1beb9f1633d52c" />
   <title>ZyronChain Wallet (testnet)</title>
   <meta name="description" content="ZyronChain Phone Wallet (testnet, unaudited): keys stay on this device. This app does not connect and does not show a balance. Sign locally." />
   <link rel="manifest" href="/app/manifest.json" />
@@ -264,7 +264,6 @@
         <p class="hint" data-i18n="chainHint">Chain ID is filled in with the no-value wallet testnet, zyron-wallet-testnet-1. Change it only for another testnet or devnet.</p>
         <label><span data-i18n="chainId">Chain ID</span><input data-tx-chain autocomplete="off" autocapitalize="none" spellcheck="false" value="zyron-wallet-testnet-1" placeholder="zyron-wallet-testnet-1" /></label>
         <label><span data-i18n="nonce">Next nonce</span><input data-tx-nonce inputmode="numeric" autocomplete="off" value="1" /></label>
-        <p class="notice warn" data-nonce-held-warning data-i18n="nonceHeldWarning" role="alert" hidden>The nonce of the held signed transfer could not be read. Enter the next nonce yourself: the held transfer's nonce + 1. Do not reuse its nonce.</p>
         <p class="hint" data-i18n="nonceHint">The nonce is a counter of how many transfers this address has sent. Your first transfer uses 1, the next one 2, and so on. In other words, use the network's current nonce + 1 (1 for a new account). This app does not look it up: the wallet testnet page shows "Next nonce to sign" when you look up your address.</p>
         <label><span data-i18n="receiver">Receiver address</span><input data-tx-to autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="ZYN…" /></label>
         <div class="row two">

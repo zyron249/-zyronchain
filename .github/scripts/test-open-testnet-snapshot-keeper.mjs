@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as keeper from "./open-testnet-snapshot-keeper.mjs";
 import {
-  GITHUB_CALL_TIMEOUT_MS, cancellableSleep, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
+  GITHUB_CALL_TIMEOUT_MS, cancellableSleep, confirmLiveChain, CONFIRM_DELAY_MS, UNCONFIRMED_STREAK, SNAPSHOT_HEADER, UNLABELED_MARGIN_MS, GenesisMismatchError, createGitHub, decideReplace, exitCodeFor, fetchSnapshot, formatLabel,
   isCompleteAsset, keeperAssetName, parseKeeperAssetName, parseLabel, perGenesisName, publishAsset, publishCycle, readCapped, repairAndCleanup, runKeeper, validateSnapshot
 } from "./open-testnet-snapshot-keeper.mjs";
 
@@ -1138,7 +1138,7 @@ test("the scheduled workflow keeps least privilege, one active run, a bounded jo
   assert.ok(timeout <= 360 && runMinutes > 0 && runMinutes + 10 <= timeout, `job timeout ${timeout} must exceed the run length ${runMinutes} and stay within 360`);
   assert.match(active, /EXPECTED_GENESIS: e0212e574271ef1de78ad148965e3d1a4a04afca3071d3c374d29ae5a6d4a8ad$/m);
   assert.match(active, /if: github\.repository == 'zyron249\/-zyronchain' && github\.ref == 'refs\/heads\/main'$/m, "only main can run the keeper: a dispatched branch must never get the state secret");
-  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.repository", "github.token", "github.token", "inputs.run_minutes || '340'", "inputs.run_minutes || '340'", "needs.keep.result", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
+  assert.deepEqual([...active.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)].map((match) => match[1]).sort(), ["github.repository", "github.repository", "github.token", "github.token", "inputs.run_minutes || '340'", "inputs.run_minutes || '340'", "inputs.run_minutes || '340'", "needs.keep.result", "secrets.ZYRON_TESTNET_STATE_SECRET"], "no secrets and no untrusted expression in a script");
   // M2 (owner-approved 2026-10-22): exactly one secret, the state secret, only as a step env value.
   assert.deepEqual([...active.matchAll(/secrets\.[A-Za-z0-9_]+/g)].map((match) => match[0]), ["secrets.ZYRON_TESTNET_STATE_SECRET"], "the state secret is the only secret");
   assert.match(active, /^          ZYRON_TESTNET_STATE_SECRET: \$\{\{ secrets\.ZYRON_TESTNET_STATE_SECRET \}\}$/m, "the state secret is passed only as the keeper step's env");
@@ -2029,4 +2029,176 @@ test("#1177 L-2 the rollback counter is carried forward without a tip and over a
   assert.equal(r.published, true);
   assert.equal(parseLabel(state.assets.find((asset) => asset.name === "state.enc").label).rollbackCounter, 2);
   assert.ok(warnings.some((line) => /unlabeled/.test(line)));
+});
+
+test("I1: labels parse regardless of key order and refuse duplicates or unknown keys", () => {
+  const expected = { height: 13400, genesis: GENESIS, tipHash: TIP_A, rollbackCounter: 2 };
+  assert.deepEqual(parseLabel(`state snapshot rollbacks=2 tip=${TIP_A} genesis=${GENESIS} height=13400`), expected);
+  assert.deepEqual(parseLabel(`state snapshot tip=${TIP_A} height=13400 rollbacks=2 genesis=${GENESIS}`), expected);
+  assert.deepEqual(parseLabel(`state snapshot genesis=${GENESIS} height=7`), { height: 7, genesis: GENESIS });
+  for (const bad of [`state snapshot height=7 height=8 genesis=${GENESIS}`, `state snapshot height=7 genesis=${GENESIS} extra=1`, `state snapshot height=7 genesis=${GENESIS}  rollbacks=1`, `state snapshot height=7 genesis=${GENESIS} tip=${TIP_A}`, `state snapshot height=7 genesis=${GENESIS} genesisHash=${TIP_B} rollbacks=0`]) assert.equal(parseLabel(bad), null, bad);
+});
+
+// #1177 follow-up: 404 retry-then-confirm.
+const published = { height: 13400, genesis: GENESIS, tipHash: TIP_A, rollbackCounter: 0 };
+function reads(...list) { let i = 0; return async () => list[Math.min(i++, list.length - 1)]; }
+const confirmBase = { now: () => T0, sleep: async () => {} };
+
+test("404 confirm: a 404 with maxHeight below the published height on both reads is a rollback", async () => {
+  const slept = [];
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 12970, hashAtPublished: null }, { maxHeight: 12975, hashAtPublished: null }), now: () => T0, sleep: async (ms) => slept.push(ms) }), "rollback");
+  assert.deepEqual(slept, [CONFIRM_DELAY_MS]);
+  assert.ok(CONFIRM_DELAY_MS >= 30_000 && CONFIRM_DELAY_MS <= 60_000);
+});
+
+test("404 confirm: a gateway that caught up with the published block refuses the rollback with a warning", async () => {
+  const warnings = [];
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13399, hashAtPublished: null }, { maxHeight: 13401, hashAtPublished: TIP_A }), ...confirmBase, warn: (line) => warnings.push(line) }), "unconfirmed");
+  assert.ok(warnings.some((line) => /ROLLBACK NOT CONFIRMED/.test(line)));
+  // maxHeight at or above the published height on either read is not confirmed either.
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13400, hashAtPublished: null }, { maxHeight: 13405, hashAtPublished: null }), ...confirmBase }), "unconfirmed");
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13399, hashAtPublished: null }, { maxHeight: 13400, hashAtPublished: null }), ...confirmBase }), "unconfirmed");
+});
+
+test("404 confirm: a different hash at an existing block is a rollback without a re-read", async () => {
+  let n = 0;
+  assert.equal(await confirmLiveChain({ label: published, read: async () => { n += 1; return { maxHeight: 13500, hashAtPublished: TIP_B }; }, ...confirmBase }), "rollback");
+  assert.equal(n, 1);
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13500, hashAtPublished: TIP_A }), ...confirmBase }), "same");
+  // A 404 whose re-read shows another hash there is a rollback.
+  assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight: 13399, hashAtPublished: null }, { maxHeight: 13401, hashAtPublished: TIP_B }), ...confirmBase }), "rollback");
+});
+
+test("404 confirm: no re-read past the run deadline", async () => {
+  let n = 0;
+  assert.equal(await confirmLiveChain({ label: published, read: async () => { n += 1; return { maxHeight: 12970, hashAtPublished: null }; }, now: () => T0, sleep: async () => {}, swapBy: T0 + CONFIRM_DELAY_MS - 1 }), "unconfirmed");
+  assert.equal(n, 1);
+});
+
+test("404 confirm: publishAsset republishes only a confirmed rollback", async () => {
+  const asset = () => [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }];
+  const run = async (liveChain) => { const { github, state } = fakeGitHub({ assets: asset() }); const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(12970, TIP_B), expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {}, liveChain }); return { r, state }; };
+  const confirmed = await run(reads({ maxHeight: 12970, hashAtPublished: null }, { maxHeight: 12971, hashAtPublished: null }));
+  assert.deepEqual([confirmed.r.published, confirmed.r.fork], [true, true]);
+  const caughtUp = await run(reads({ maxHeight: 13399, hashAtPublished: null }, { maxHeight: 13401, hashAtPublished: TIP_A }));
+  assert.deepEqual([caughtUp.r.published, caughtUp.r.upToDate, caughtUp.r.fork], [false, true, undefined]);
+  assert.equal(caughtUp.state.assets.length, 1);
+});
+
+test("I2: an incomplete copy with a huge rollbacks= does not block repair", async () => {
+  const { github, state } = fakeGitHub({ assets: [
+    { id: 1, name: keeperAssetName("next", "state.enc", T0 - 60_000), label: formatLabel(13500, GENESIS, { tipHash: TIP_A, rollbackCounter: 999999999 }), state: "uploaded", size: 0 },
+    { id: 2, name: keeperAssetName("prev", "state.enc", T0 - 3_000_000), label: formatLabel(13010, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 100_000 },
+    { id: 3, name: "state.enc", label: formatLabel(13030, GENESIS, { tipHash: TIP_B, rollbackCounter: 1 }), state: "uploaded", size: 0 }
+  ] });
+  await repairAndCleanup({ github, tag: "t", expectedGenesis: GENESIS, now: () => T0, log() {}, warn() {}, sleep: async () => {} });
+  assert.equal(state.assets.find((asset) => asset.name === "state.enc")?.id, 2);
+});
+
+test("I3: runKeeper stops and fails the run after a rollback republish", async () => {
+  const errors = [];
+  let cycles = 0;
+  const github = { release: async () => ({ id: 1, assets: [] }) };
+  const stats = await runKeeper({
+    fetchImpl: async (url) => new Response(JSON.stringify({ status: "ready", maxHeight: 12970, snapshotCache: {} }), { status: 200 }),
+    github, gateway: "https://gw.example", tag: "t", expectedGenesis: GENESIS, runMs: 3_600_000, publishIntervalMs: 600_000, keepAliveIntervalMs: 300_000,
+    now: (() => { let t = T0; return () => (t += 1_000); })(), sleep: async () => {}, log() {}, warn() {}, error: (line) => errors.push(line),
+    publish: async () => { cycles += 1; return { height: 12970, published: true, fork: true, rollbackCounter: 1, sha256: "x", size: 1 }; }
+  });
+  assert.equal(cycles, 1, "no further cycle after the rollback");
+  assert.equal(stats.rollbacks, 1);
+  assert.ok(errors.some((line) => /ROLLBACK DETECTED/.test(line)));
+  assert.equal(exitCodeFor(stats), 1);
+});
+
+// fix/keeper-followups: #1179 Low-1 (repeated unconfirmed rollbacks fail the run).
+async function runWithResults(results) {
+  const time = virtualTime();
+  const { github } = fakeGitHub({ now: time.now });
+  const errors = [];
+  let i = 0;
+  const stats = await time.run(runKeeper({
+    fetchImpl: async () => new Response("{}", { status: 200 }), github, gateway: "https://gw", tag: "t", expectedGenesis: GENESIS,
+    runMs: results.length * 10 * 60_000 - 1, publishIntervalMs: 10 * 60_000, keepAliveIntervalMs: 5 * 60_000,
+    now: time.now, sleep: time.sleep, log() {}, warn() {}, error: (line) => errors.push(line),
+    publish: async () => results[Math.min(i++, results.length - 1)]
+  }));
+  assert.equal(i, results.length, "one cycle per scripted result");
+  return { stats, errors };
+}
+const UNCONF = { height: 12970, published: false, upToDate: true, unconfirmed: true, reason: "a missing live block was not confirmed" };
+const GOOD = { height: 12970, published: false, upToDate: true, reason: "not newer" };
+
+test("Low-1: UNCONFIRMED_STREAK unconfirmed cycles in a row raise ROLLBACK UNCONFIRMED (repeated) and fail without republishing", async () => {
+  assert.equal(UNCONFIRMED_STREAK, 3);
+  const { stats, errors } = await runWithResults([GOOD, UNCONF, UNCONF, UNCONF, GOOD]);
+  assert.equal(stats.unconfirmedAlarm, true);
+  assert.equal(stats.published, 0);
+  assert.equal(errors.filter((line) => /ROLLBACK UNCONFIRMED \(repeated\)/.test(line)).length, 1);
+  assert.equal(exitCodeFor(stats), 1);
+});
+
+test("Low-1: a run whose every cycle was unconfirmed fails even below the streak", async () => {
+  const { stats, errors } = await runWithResults([UNCONF, UNCONF]);
+  assert.equal(stats.unconfirmed, 2);
+  assert.equal(stats.unconfirmedAlarm, true);
+  assert.ok(errors.some((line) => /ROLLBACK UNCONFIRMED \(repeated\): every cycle/.test(line)));
+  assert.equal(exitCodeFor(stats), 1);
+});
+
+test("Low-1: a confirmed-good cycle resets the unconfirmed streak", async () => {
+  const { stats, errors } = await runWithResults([UNCONF, UNCONF, GOOD, UNCONF, UNCONF, GOOD]);
+  assert.equal(stats.unconfirmed, 4);
+  assert.equal(stats.unconfirmedAlarm, false);
+  assert.equal(errors.length, 0);
+  assert.equal(exitCodeFor(stats), 0);
+});
+
+test("Low-1: a missing or non-numeric /health maxHeight counts as unconfirmed, not a pass", async () => {
+  for (const maxHeight of [undefined, "12970", null, Number.NaN]) {
+    assert.equal(await confirmLiveChain({ label: published, read: reads({ maxHeight, hashAtPublished: null }, { maxHeight, hashAtPublished: null }), ...confirmBase }), "unconfirmed", String(maxHeight));
+  }
+  const { github } = fakeGitHub({ assets: [{ id: 7, name: "state.enc", label: formatLabel(13400, GENESIS, { tipHash: TIP_A, rollbackCounter: 0 }), state: "uploaded", size: 100_000 }] });
+  const r = await publishAsset({ github, tag: "t", name: "state.enc", bytes: sealed(), snapshot: chainSnapshot(12970, TIP_B), expectedGenesis: GENESIS, requestStartedMs: T0, now: () => T0, log() {}, warn() {}, sleep: async () => {}, liveChain: reads({ hashAtPublished: null }) });
+  assert.deepEqual([r.published, r.unconfirmed], [false, true]);
+});
+
+// #1171 Info items.
+test("#1171 Info: run_minutes must be digits only in both jobs", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const keepStep = /- name: Validate run_minutes\n\s+env:\n\s+RUN_MINUTES_INPUT: .*\n\s+run: (.*)$/m.exec(workflow)?.[1];
+  assert.ok(keepStep, "the keep job validates run_minutes before checkout");
+  assert.ok(workflow.indexOf("- name: Validate run_minutes") < workflow.indexOf("- name: Checkout keeper script"));
+  const chainCheck = /^\s+(if ! \[\[ "\$RUN_MINUTES" =~ \^\[0-9\]\+\$ \]\]; then .*; exit 1; fi)$/m.exec(workflow)?.[1];
+  assert.ok(chainCheck, "the chain job validates RUN_MINUTES before any API call");
+  assert.ok(workflow.indexOf(chainCheck) < workflow.indexOf("gh api"), "validated before any gh call");
+  const run = (script, name, value) => spawnSync("bash", ["-c", script], { env: { PATH: process.env.PATH, [name]: value }, encoding: "utf8" });
+  for (const good of ["340", "1", "60"]) {
+    assert.equal(run(keepStep, "RUN_MINUTES_INPUT", good).status, 0, good);
+    assert.equal(run(chainCheck, "RUN_MINUTES", good).status, 0, good);
+  }
+  for (const bad of ["", "1e2", "-5", "34 0", "340; echo x", "0x10", "١٢"]) {
+    const keep = run(keepStep, "RUN_MINUTES_INPUT", bad);
+    assert.equal(keep.status, 1, JSON.stringify(bad));
+    assert.match(keep.stdout, /::error title=Invalid run_minutes::/);
+    assert.equal(run(chainCheck, "RUN_MINUTES", bad).status, 1, JSON.stringify(bad));
+  }
+  // The rejected value is never echoed, so a newline cannot inject a workflow command.
+  for (const injected of ["5\n::warning::pwned", "x\r\n::warning title=t::pwned", "::warning::pwned"]) {
+    for (const [script, name] of [[keepStep, "RUN_MINUTES_INPUT"], [chainCheck, "RUN_MINUTES"]]) {
+      const result = run(script, name, injected);
+      assert.equal(result.status, 1, JSON.stringify(injected));
+      assert.deepEqual(result.stdout.split(/\r?\n/).filter(Boolean), ["::error title=Invalid run_minutes::run_minutes must be a positive integer"], `${name} ${JSON.stringify(injected)}`);
+      assert.doesNotMatch(result.stdout + result.stderr, /pwned|::warning/);
+    }
+  }
+});
+
+test("#1171 Info: the failure-streak runs query is limited to main", async () => {
+  const workflow = await readFile(new URL("../workflows/open-testnet-snapshot-keeper.yml", import.meta.url), "utf8");
+  const query = /prior=\$\(gh api "([^"]+)"/.exec(workflow)?.[1];
+  assert.ok(query, "failure-streak query present");
+  assert.match(query, /[?&]branch=main(&|$)/);
+  assert.match(query, /[?&]status=completed(&|$)/);
 });
