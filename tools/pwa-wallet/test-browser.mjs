@@ -409,6 +409,8 @@ try {
       assert.equal(await page.isVisible('[data-signed-hold]'), true, 'signed transfer stays until dismissed');
       assert.equal(JSON.parse(await page.textContent('[data-signed-hold-json]')).txid, signed.txid);
       assert.equal(await page.textContent('[data-signed-hold-to]'), core.displayAddress(RECEIVER), 'held signed transfer shows the grouped receiver');
+      assert.equal(await page.inputValue('[data-tx-nonce]'), String(signed.nonce + 1), 'lock and unlock with a held signed transfer keeps the next nonce (no second transfer at the same nonce)');
+      assert.equal(await page.isVisible('[data-nonce-held-warning]'), false, 'no warning when the held nonce is readable');
       await page.click('[data-signed-dismiss]');
       assert.equal(await page.isVisible('[data-signed-hold]'), false);
     } else {

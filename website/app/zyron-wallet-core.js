@@ -73,6 +73,15 @@
   function nextNonce(lastSignedNonce) {
     return Number.isSafeInteger(lastSignedNonce) && lastSignedNonce >= 1 && lastSignedNonce < Number.MAX_SAFE_INTEGER ? lastSignedNonce + 1 : 1;
   }
+  // Prefill after unlock while a signed transfer is still held: its nonce + 1, so a second
+  // transfer cannot reuse that nonce. If the held nonce is unreadable, leave the field empty
+  // and warn; never fall back to 1.
+  function heldNoncePrefill(heldTx) {
+    if (!heldTx) return { value: '1', warn: false };
+    const n = heldTx.nonce;
+    if (Number.isSafeInteger(n) && n >= 1 && n < Number.MAX_SAFE_INTEGER) return { value: String(n + 1), warn: false };
+    return { value: '', warn: true };
+  }
   function defaultTransferVersion(chainId) {
     return String(chainId == null ? '' : chainId).trim() === WALLET_TESTNET_CHAIN_ID ? 1 : 2;
   }
@@ -744,7 +753,7 @@
 
   const api = Object.freeze({
     DERIVATION_PATH, VAULT_FORMAT, VAULT_VERSION, VAULT_VERSION_V1, SELF_SEND_MESSAGE, VAULT_KDF, MAX_VAULT_TEXT, BOOK_MAX_CONTACTS, BOOK_MAX_SENT, BOOK_NAME_MAX, LOOKALIKE_MIN_SHARED, LOOKALIKE_MAX_DIFF, LOOKALIKE_MAX_COMPARISONS, LOOKALIKE_MAX_MATCHES, ATOMS_PER_ZYN, FIXED_TRANSFER_FEE_ATOMS, FIXED_SUPPLY_V1_CHAIN_IDS, MAX_SUPPLY_ATOMS, MINING_TRACKER_ADDRESS,
-    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion, nextNonce,
+    TRANSFER_SIGNING_DOMAIN_V2, ADDRESS_CHECKSUM_DOMAIN, ADDRESS_RE, TEST_CHAIN_ID_RE, WALLET_TESTNET_CHAIN_ID, defaultTransferVersion, nextNonce, heldNoncePrefill,
     wipe, canonicalJson, sha256Hex, addressFromPublicKey, toChecksumAddress, parseAddressInput, groupAddress, displayAddress, addressDiff,
     passwordStrength, normalizePhrase, generateEntropy, entropyToPhrase, phraseToEntropy, deriveAccount,
     createVault, createVaultSession, openVault, upgradeVaultVerified, upgradeMarker, parseUpgradeMarker, isRollback, assertVaultShape, parseVault, upgradeVault, updateVaultBook,
