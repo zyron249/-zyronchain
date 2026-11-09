@@ -21,6 +21,25 @@ export const KNOWN_V1_FLAKE_MESSAGES = Object.freeze([
 
 const DOCS = 'docs/L1_TEST_RELIABILITY.md';
 
+// Feature 6A (#1146): the CLI never signs transaction version 1, so on a
+// protocol-1 chain the harness transfer step is refused by design until #1147.
+// Only this exact signature is labelled as the expected refusal: the first
+// error is the harness's own `transfer` CLI call failing, the CLI printed the
+// protocol-1 refusal for the node's advertised protocol with the #1147
+// pointer, and no transfer was verified. Anything else is still classified as
+// the known stall or a regression.
+const V1_REFUSAL_COMMAND = /^Command failed: \S+ \S+\/secure-cli\.js transfer (?:\S+ )*--chain-id (\S+) /;
+export function expectedV1RefusalEvidence(error, text) {
+  if (error === null) return { ok: false };
+  const command = error.match(V1_REFUSAL_COMMAND);
+  if (!command) return { ok: false };
+  const chainId = command[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const refusal = new RegExp(`^Fatal: Refusing to sign: ${chainId} advertises protocol 1 \\(node\\), which needs transaction version 1; the CLI never signs version 1\\. Use a protocol-3 chain; see https://github\\.com/zyron249/-zyronchain/issues/1147\\. Nothing was signed\\.$`, 'm');
+  if (!refusal.test(text)) return { ok: false };
+  if (/^Transfer verified on both validators/m.test(text)) return { ok: false };
+  return { ok: true, chainId: command[1] };
+}
+
 // First error line printed by local-devnet.mjs (`console.error(error.stack)`).
 export function firstErrorMessage(text) {
   const match = String(text).match(/^(?:\S+ )?(?:[A-Za-z]*Error)(?: \[[A-Z_]+\])?: (.*)$/m);
@@ -81,6 +100,11 @@ export function classifyDevnetV1Result(text, outcome, validatorLogs) {
       message: `The devnet step outcome was "${outcome}". See ${DOCS}.` };
   }
   const error = firstErrorMessage(log);
+  const refused = expectedV1RefusalEvidence(error, log);
+  if (refused.ok) {
+    return { kind: 'expected-v1-refusal', level: 'warning', title: 'Protocol-v1 devnet refused by design (6A), not a regression', error,
+      message: `The CLI refused to sign the transfer step because ${refused.chainId} advertises protocol 1 and the CLI never signs transaction version 1 (feature 6A). This job stays red by design until #1147 retires it. It is informational and not a required check; local-devnet-v6 is the supported path. See ${DOCS}.` };
+  }
   const evidence = knownStallEvidence(error, validatorLogs);
   const shown = (error ?? 'no error message found').replace(/ last-status=.*$/, '').slice(0, 160);
   if (evidence.ok) {
