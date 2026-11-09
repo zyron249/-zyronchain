@@ -269,15 +269,20 @@ test("WindowLimiter 60s tables: when full, admit a new key by evicting the oldes
   assert.equal(l.take("fresh", 20).allowed, false);
 });
 
-test("WindowLimiter: at most 256 live keys per IPv6 /48; further /64s from that /48 are denied and counted", () => {
-  // Fail-first against uncapped /48 sprays at 7e2c363.
+test("WindowLimiter: at most 256 live keys per IPv6 /48; a further /64 from that /48 replaces the /48's own oldest key (#1210 R2-1)", () => {
+  // Fail-first against uncapped /48 sprays at 7e2c363. Since #1210 the 60s
+  // tables evict within the /48 instead of denying the neighbour.
   const l = new api.WindowLimiter(10, 60_000, 10_000, { evictOnFull: true, prefixCap: 256 });
   const key = (n: number) => `ipv6:2001:0db8:0001:${n.toString(16).padStart(4, "0")}/64`;
   for (let i = 0; i < 256; i += 1) assert.equal(l.take(key(i), i).allowed, true, `admit /64 ${i}`);
   assert.equal(l.hits.size, 256);
-  assert.equal(l.take(key(256), 300).allowed, false, "257th /64 from the same /48 is denied");
-  assert.equal(l.hits.has(key(256)), false);
-  assert.equal(l.stats().deniedFull, 1);
+  assert.equal(l.take(key(256), 300).allowed, true, "257th /64 from the same /48 is admitted");
+  assert.equal(l.hits.has(key(256)), true);
+  assert.equal(l.hits.has(key(0)), false, "the /48's oldest key made room");
+  assert.equal(l.hits.size, 256);
+  assert.equal(l.stats().evictedPrefix, 1);
+  assert.equal(l.stats().deniedFull, 0);
+  assert.equal(l.stats().deniedPrefix, 0);
   // A different /48 still gets in.
   assert.equal(l.take("ipv6:2001:0db8:0002:0000/64", 301).allowed, true);
   assert.equal(l.hits.size, 257);

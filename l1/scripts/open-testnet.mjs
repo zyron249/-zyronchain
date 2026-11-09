@@ -593,8 +593,11 @@ export function faucetOriginAllowed(origin, allowed) {
 // writeJson merges CORS first; a faucet response replaces it with these.
 function withoutCors(extra) { return { "access-control-allow-origin": undefined, "access-control-allow-methods": undefined, "access-control-allow-headers": undefined, "access-control-max-age": undefined, ...extra }; }
 export const FAUCET_UNAVAILABLE_MESSAGE = "faucet temporarily unavailable, retry later";
-// POST /faucet. Rate limits run before the body is read. Errors are generic;
-// the details (node error text included) go to the server log only.
+// POST /faucet. Errors are generic; the details (node error text included) go
+// to the server log only. The per-IP quota is taken only after the body
+// validates (#1210 R3-3), so a malformed or oversized body never spends it; an
+// IP that already used its whole window is still refused before its body is
+// read (faucetIp.peek).
 export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody, send, log = (line) => console.error(line), durabilityView = async () => ({}) }) {
   return async (request, response, ip) => {
     const cors = withoutCors(faucetCorsHeaders(request.headers.origin, origins));
@@ -612,11 +615,13 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
     const contentType = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
     if (contentType !== "application/json") return reply(415, { error: "content-type must be application/json" });
     try {
-      const ipRate = limits.faucetIp.take(ip);
-      if (!ipRate.allowed) return limited(ipRate);
+      const exhausted = typeof limits.faucetIp.peek === "function" ? limits.faucetIp.peek(ip) : { allowed: true };
+      if (!exhausted.allowed) return limited(exhausted);
       const body = await readJsonBody(request);
       const address = body && typeof body === "object" ? body.address : undefined;
       if (typeof address !== "string" || !ADDRESS_PATTERN.test(address) || address === faucetAddress) return reply(400, { error: "body must be {\"address\":\"ZYN...\"}" });
+      const ipRate = limits.faucetIp.take(ip);
+      if (!ipRate.allowed) return limited(ipRate);
       const addressRate = limits.faucetAddress.take(address);
       if (!addressRate.allowed) return limited(addressRate);
       const globalRate = limits.faucetGlobal.take("global");
@@ -913,16 +918,21 @@ export function rateLimiterMaxKeys(env = process.env) {
 // at 10k a key spray could fill the table for a whole day and lock out every
 // new faucet user, whereas short-window tables recover within a minute.
 export const DAY_WINDOW_LIMITER_MAX_KEYS = 50_000;
-// Per-IPv6-/48 live-key cap for the 60-second tables. One /48 holds 65,536
-// /64 buckets; without a sub-cap a single allocation can fill the whole table.
-// Faucet day-window tables leave this at 0 (out of scope for this change).
+// Per-IPv6-/48 live-key cap. One /48 holds 65,536 /64 buckets; without a
+// sub-cap a single allocation can fill the whole table. Used by the 60-second
+// tables (read/write/relayIp) and by faucetIp (#1210 R3-3).
 export const RATE_LIMITER_PREFIX_CAP_DEFAULT = 256;
+// Fill alert (#1210 R2-3): one log line when a table first reaches 80% of
+// maxKeys and one when it is full; re-armed once it drops below 70%.
+export const RATE_LIMITER_FILL_ALERT_RATIO = 0.8;
+export const RATE_LIMITER_FILL_REARM_RATIO = 0.7;
 // IPv6 rate-limit keys look like "ipv6:HHHH:HHHH:HHHH:HHHH/64" (padded). The
 // /48 is the first three hextets. IPv4 and non-ipv6 keys have no prefix.
 export function rateLimiterIpv6Prefix48(key) {
   const m = /^ipv6:([0-9a-f]{4}):([0-9a-f]{4}):([0-9a-f]{4}):[0-9a-f]{4}\/64$/.exec(key);
   return m ? `${m[1]}:${m[2]}:${m[3]}::/48` : undefined;
 }
+const FILL_LEVELS = ["ok", "high", "full"];
 // Fixed-window per-key limiter with a hard key bound.
 // - evictOnFull=false (default; faucet day windows): when full after sweeping
 //   expired entries, a new key is denied so live keys keep their counts.
@@ -933,18 +943,37 @@ export function rateLimiterIpv6Prefix48(key) {
 //   new client (Red Team PR1200-1), victims already lose slots at window
 //   boundaries under a spray (PR1200-7), and evictions are counted so a flood
 //   shows up in /health. Eviction happens only to admit a new key.
-// - prefixCap>0: at most that many live keys per IPv6 /48; further /64s from
-//   the same /48 are denied (counted in deniedFull).
+// - prefixCap>0: at most that many live keys per IPv6 /48. perPrefix maps each
+//   /48 to an insertion-ordered Set of its live keys (oldest first). When a
+//   new /64 arrives and its /48 is at the cap (#1210 R2-1):
+//   - evictOnFull tables drop that /48's OWN oldest key to admit it (counted
+//     in evictedPrefix), so a sprayer only churns its own /48 and a neighbour
+//     in it is admitted instead of locked out for the whole spray;
+//   - deny-on-full tables (faucetIp) deny it (counted in deniedPrefix) with a
+//     Retry-After at the expiry of that /48's oldest key, the first moment a
+//     slot can free. Eviction there would let a /48 reset day quotas.
+// - fillAlert=true: track 80%/full crossings, call onFill once per crossing,
+//   and report fill / fillAlerts in stats().
 export class WindowLimiter {
-  constructor(limit, windowMs, maxKeys = RATE_LIMITER_MAX_KEYS_DEFAULT, { evictOnFull = false, prefixCap = 0 } = {}) {
-    Object.assign(this, { limit, windowMs, maxKeys, evictOnFull, prefixCap, hits: new Map(), perPrefix: new Map(), deniedFull: 0, evicted: 0 });
+  constructor(limit, windowMs, maxKeys = RATE_LIMITER_MAX_KEYS_DEFAULT, { evictOnFull = false, prefixCap = 0, fillAlert = false, onFill } = {}) {
+    Object.assign(this, { limit, windowMs, maxKeys, evictOnFull, prefixCap, fillAlert, hits: new Map(), perPrefix: new Map(), deniedFull: 0, deniedPrefix: 0, evicted: 0, evictedPrefix: 0, fillAlerts: 0 });
+    this.#onFill = typeof onFill === "function" ? onFill : undefined;
+    this.#highAt = Math.max(1, Math.ceil(maxKeys * RATE_LIMITER_FILL_ALERT_RATIO));
+    this.#rearmBelow = Math.floor(maxKeys * RATE_LIMITER_FILL_REARM_RATIO);
   }
+  #onFill;
+  #highAt;
+  #rearmBelow;
+  #alertLevel = 0;
+  #prefixOf(key) { return this.prefixCap > 0 ? rateLimiterIpv6Prefix48(key) : undefined; }
   #drop(key) {
     this.hits.delete(key);
-    const p = rateLimiterIpv6Prefix48(key);
+    const p = this.#prefixOf(key);
     if (!p) return;
-    const n = (this.perPrefix.get(p) ?? 1) - 1;
-    if (n > 0) this.perPrefix.set(p, n); else this.perPrefix.delete(p);
+    const group = this.perPrefix.get(p);
+    if (!group) return;
+    group.delete(key);
+    if (group.size === 0) this.perPrefix.delete(p);
   }
   #expireFront(now) {
     for (const [k, e] of this.hits) {
@@ -952,15 +981,41 @@ export class WindowLimiter {
       this.#drop(k);
     }
   }
+  #level() { const n = this.hits.size; return n >= this.maxKeys ? 2 : n >= this.#highAt ? 1 : 0; }
+  #trackFill() {
+    if (!this.fillAlert) return;
+    const level = this.#level();
+    if (level > this.#alertLevel) {
+      this.#alertLevel = level;
+      this.fillAlerts += 1;
+      if (this.#onFill) this.#onFill({ level: FILL_LEVELS[level], ...this.stats() });
+    } else if (this.hits.size < this.#rearmBelow) this.#alertLevel = 0;
+  }
+  // Read-only pre-check: denies only a live key that has already used its
+  // whole window. Lets a route refuse an exhausted client before reading its
+  // body without spending quota on requests that later fail validation.
+  peek(key, now = Date.now()) {
+    const entry = this.hits.get(key);
+    if (entry && now - entry.start < this.windowMs && entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
+    return { allowed: true };
+  }
   take(key, now = Date.now()) {
     this.#expireFront(now);
     let entry = this.hits.get(key);
     if (entry && now - entry.start >= this.windowMs) { this.#drop(key); entry = undefined; }
     if (!entry) {
-      const p = this.prefixCap > 0 ? rateLimiterIpv6Prefix48(key) : undefined;
-      if (p && (this.perPrefix.get(p) ?? 0) >= this.prefixCap) {
-        this.deniedFull += 1;
-        return { allowed: false, retryAfterMs: this.windowMs };
+      const p = this.#prefixOf(key);
+      const group = p ? this.perPrefix.get(p) : undefined;
+      if (group && group.size >= this.prefixCap) {
+        const oldestKey = group.values().next().value;
+        if (this.evictOnFull) {
+          this.#drop(oldestKey);
+          this.evictedPrefix += 1;
+        } else {
+          this.deniedPrefix += 1;
+          const oldest = this.hits.get(oldestKey);
+          return { allowed: false, retryAfterMs: oldest ? Math.max(1, oldest.start + this.windowMs - now) : this.windowMs };
+        }
       }
       if (this.hits.size >= this.maxKeys) {
         if (this.evictOnFull) {
@@ -969,27 +1024,54 @@ export class WindowLimiter {
           this.evicted += 1;
         } else {
           this.deniedFull += 1;
+          this.#trackFill();
           return { allowed: false, retryAfterMs: this.windowMs };
         }
       }
       entry = { start: now, count: 0 };
       this.hits.set(key, entry);
-      if (p) this.perPrefix.set(p, (this.perPrefix.get(p) ?? 0) + 1);
+      if (p) {
+        const live = this.perPrefix.get(p);
+        if (live) live.add(key); else this.perPrefix.set(p, new Set([key]));
+      }
     }
+    this.#trackFill();
     if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
     entry.count += 1;
     return { allowed: true };
   }
   stats() {
-    return { size: this.hits.size, maxKeys: this.maxKeys, deniedFull: this.deniedFull, evicted: this.evicted };
+    const base = { size: this.hits.size, maxKeys: this.maxKeys, deniedFull: this.deniedFull, deniedPrefix: this.deniedPrefix, evicted: this.evicted, evictedPrefix: this.evictedPrefix };
+    return this.fillAlert ? { ...base, fill: FILL_LEVELS[this.#level()], fillAlerts: this.fillAlerts } : base;
   }
 }
-// /health fragment for the gateway rate-limit tables (size / deniedFull /
-// evicted). Keepers and probes watch deniedFull or evicted rising under a spray.
+// One log line per fill crossing (counts only; no IPs, keys or prefixes).
+export function rateLimiterFillLine(name, info) {
+  return `rate limiter ${name}: ${info.level === "full" ? "full" : "at 80%"} (${info.size}/${info.maxKeys} keys; deniedFull=${info.deniedFull} deniedPrefix=${info.deniedPrefix} evicted=${info.evicted} evictedPrefix=${info.evictedPrefix})`;
+}
+// /health fragment for the gateway rate-limit tables. deniedFull counts
+// deny-on-full refusals, deniedPrefix /48-cap refusals (faucetIp),
+// evicted table-full evictions and evictedPrefix /48-cap evictions (60s
+// tables). Tables with fillAlert also report fill ("ok" | "high" | "full").
 export function rateLimitersHealth(limits) {
   const out = {};
   for (const name of Object.keys(limits)) out[name] = limits[name].stats();
   return out;
+}
+// The gateway's rate-limit tables (exported so tests can check the wiring).
+export function createGatewayLimits({ env = process.env, log = (line) => console.warn(line) } = {}) {
+  const limiterMaxKeys = rateLimiterMaxKeys(env);
+  const fillOpts = (name) => ({ fillAlert: true, onFill: (info) => log(rateLimiterFillLine(name, info)) });
+  const shortWindowOpts = (name) => ({ evictOnFull: true, prefixCap: RATE_LIMITER_PREFIX_CAP_DEFAULT, ...fillOpts(name) });
+  return {
+    read: new WindowLimiter(Number(env.ZYRON_RPC_READS_PER_MINUTE ?? 240), 60_000, limiterMaxKeys, shortWindowOpts("read")),
+    write: new WindowLimiter(Number(env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000, limiterMaxKeys, shortWindowOpts("write")),
+    faucetIp: new WindowLimiter(5, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS, { prefixCap: RATE_LIMITER_PREFIX_CAP_DEFAULT, ...fillOpts("faucetIp") }),
+    faucetAddress: new WindowLimiter(1, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS, fillOpts("faucetAddress")),
+    faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
+    snapshot: new WindowLimiter(30, 3_600_000, 1),
+    relayIp: new WindowLimiter(Number(env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000, limiterMaxKeys, shortWindowOpts("relayIp"))
+  };
 }
 // Validator supervisor: exponential restart backoff (base doubling to max),
 // reset once a validator has run for stableMs, plus per-validator restart
@@ -2039,17 +2121,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     return statusCache;
   }
 
-  const limiterMaxKeys = rateLimiterMaxKeys();
-  const shortWindowOpts = { evictOnFull: true, prefixCap: RATE_LIMITER_PREFIX_CAP_DEFAULT };
-  const limits = {
-    read: new WindowLimiter(Number(process.env.ZYRON_RPC_READS_PER_MINUTE ?? 240), 60_000, limiterMaxKeys, shortWindowOpts),
-    write: new WindowLimiter(Number(process.env.ZYRON_RPC_TX_PER_MINUTE ?? 10), 60_000, limiterMaxKeys, shortWindowOpts),
-    faucetIp: new WindowLimiter(5, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
-    faucetAddress: new WindowLimiter(1, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
-    faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
-    snapshot: new WindowLimiter(30, 3_600_000, 1),
-    relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000, limiterMaxKeys, shortWindowOpts)
-  };
+  const limits = createGatewayLimits();
   // Verified history (R28-1059): from the restore replay when there was one,
   // otherwise validated from genesis on the first build.
   const snapshotHistory = { chain: verifiedHistory?.chain ?? new ZyronChain(genesis), blocks: verifiedHistory?.chain ? verifiedHistory.blocks : [] };
