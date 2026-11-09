@@ -32,6 +32,9 @@ for (const file of ['website/app/vendor/noble-scure.js', 'website/app/vendor/qr.
 const core = globalThis.ZyronAppCore;
 const SNAP = { mnemonic: 'test test test test test test test test test test test junk', address: 'ZYN0ac2dbccbd2a299dea4fcc2ddf98d7dd77eebb41' };
 const PASSWORD = 'Correct-Horse-Battery-9';
+// Fixed page-clock start for the offline flow, safely before the PWA v1 exception end (2026-11-08T00:00:00Z).
+const V1_EXCEPTION_TEST_CLOCK_MS = Date.parse('2026-11-01T12:00:00Z');
+assert.ok(V1_EXCEPTION_TEST_CLOCK_MS < core.V1_EXCEPTION_END_MS, 'the pinned test clock must precede the v1 exception end');
 const RECEIVER = 'ZYN5D99EE966b42cD8fC7bdD1364B389153A9E78B42'; // checksummed docs vector
 
 // ---------- local server with the production response headers ----------
@@ -308,7 +311,10 @@ try {
     assert.equal(qrPath, d, 'QR matrix encodes the canonical address');
     await shot(page, '5-home-qr');
     if (!live) {
-      await page.clock.install();
+      // Pin the page clock before the hard-coded v1 exception end (core.V1_EXCEPTION_END_MS) so the
+      // exception-path tests below (wallet-testnet default version 1, a signed v1 transfer) do not start
+      // failing on the wall-clock date. The expiry path is covered with a stubbed clock in test-core.mjs.
+      await page.clock.install({ time: V1_EXCEPTION_TEST_CLOCK_MS });
       await page.click('[data-copy-address]');
       assert.equal(await page.evaluate(() => navigator.clipboard.readText()), address, 'primary copy is the canonical lowercase address');
       assert.equal(await page.textContent('[data-copy-result]'), 'Copied. This app will try to clear the clipboard in 60 seconds.');
@@ -351,7 +357,7 @@ try {
     await page.click('[data-tx-review]');
     assert.match(await page.textContent('[data-tx-check]'), /testnet or devnet/);
     assert.equal(await visibleScreen(page), 'send', 'a non-testnet chain id never reaches review');
-    await page.fill('[data-tx-chain]', 'zyron-other-testnet');
+    await page.fill('[data-tx-chain]', 'zyron-devnet-1');
     assert.equal(await page.inputValue('[data-tx-version]'), '2', 'other test chains keep version 2 selectable as the default');
     await page.selectOption('[data-tx-version]', '1');
     await page.selectOption('[data-tx-version]', '2');
@@ -418,6 +424,10 @@ try {
     await page.click('[data-screen="home"] [data-go="send"]');
     await page.waitForSelector('[data-screen="send"]:not([hidden])');
     await page.fill('[data-tx-chain]', 'zyron-open-testnet-1');
+    // 6A: version 1 is signed only for zyron-wallet-testnet-1, so leaving that chain resets an explicit
+    // version-1 choice to the new chain's default instead of carrying it into a refused review.
+    assert.equal(await page.inputValue('[data-tx-version]'), '2', 'leaving the wallet testnet resets the version to the chain default');
+    assert.match(await page.textContent('[data-tx-version-hint]'), /default to transaction version 2/);
     await page.fill('[data-tx-fee]', '0');
     await page.click('[data-tx-review]');
     await page.waitForSelector('[data-screen="review"]:not([hidden])');

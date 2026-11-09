@@ -654,9 +654,12 @@
   });
 
   // Known-chain default: zyron-wallet-testnet-1 signs version 1 unless the owner picks another version.
+  // 6A: version 1 is signed only for zyron-wallet-testnet-1, so any other chain ID resets the choice to
+  // that chain's default (an explicit version-1 choice never follows the user to another chain).
   let txVersionTouched = false;
   function applyDefaultTxVersion() {
     const chainId = $('[data-tx-chain]').value.trim();
+    if (chainId !== core.WALLET_TESTNET_CHAIN_ID) txVersionTouched = false;
     if (!txVersionTouched) $('[data-tx-version]').value = String(core.defaultTransferVersion(chainId));
     const hint = $('[data-tx-version-hint]');
     if (!hint) return;

@@ -181,3 +181,53 @@ consensus-critical.
 - Design to Security: Oct 27, 18:00 ET.
 - Core PR (module, vectors, CLI, signer guard): Oct 30, after design approval.
 - Wallet Dev PR (PWA + Snap parity): after the core PR merges.
+
+## 13. Transaction version selection (option 3) and the v1 ruling
+
+Patron chose option 3 for PR #1146: the transaction version comes from the chain's
+advertised protocol, never from a flag, a toggle or the payload.
+
+- **Online (`zyron-l1 transfer`)**: the CLI reads `GET /protocol` and uses the ACTIVE protocol `currentVersion` (not `nextVersion`)
+  (404 means protocol 1). See `l1/src/cli.ts` `advertisedProtocolForRpc` and
+  `submitTransfer` (`resolveTransferVersion(chainId, …, "node")`). There is no version flag.
+- **Offline (`zyron-l1 transfer-sign`)**: the version comes from a fixed, frozen
+  chainId-to-protocol table in `l1/src/transfer-version-policy.ts`
+  (`OFFLINE_CHAIN_PROTOCOLS`: `zyron-wallet-testnet-1` = 1, `zyron-open-testnet-1` = 6).
+  An unknown chain is treated as v2-capable (protocol 3), never as v1. `--tx-version` only
+  confirms; a value that disagrees with the table is refused.
+- **Consensus is unchanged**: protocol < 3 needs tx v1, protocol >= 3 needs tx v2.
+
+### Security ruling: v1 is never signed by the CLI or the renderer path
+
+`resolveTransferVersion` refuses every protocol < 3 chain with an error pointing to
+issue #1147. `l1` `signTransfer` refuses version 1 on every chain ID. The CLI therefore
+cannot sign for `zyron-wallet-testnet-1` (protocol 1) or the local v1 devnet.
+
+**PWA-only, time-boxed v1 exception.** `website/app/zyron-wallet-core.js` still signs v1,
+but only for `zyron-wallet-testnet-1` and only while the transaction `timestampMs` is before
+`V1_EXCEPTION_END_MS = 1794096000000` (2026-11-08T00:00:00Z). Anything else fails closed.
+It is also refused when `Date.now()` is at or after the end (so a backdated `timestampMs` cannot extend it), when the device clock is unreadable, and when `timestampMs` is more than `V1_CLOCK_WINDOW_MS = 600000` (10 minutes) from `Date.now()`. The exception is hard-coded (not env- or config-driven) and ends when testnet-1 reaches
+protocol 3 (#1147), whichever comes first.
+
+### R3: fixed chain ID list
+
+Only `zyron-devnet-1`, `zyron-wallet-testnet-1` and `zyron-open-testnet-1` are rendered and
+signed, in l1 and the PWA (identical lists, enforced by a test). Everything else, including
+any ID containing "mainnet" and bare "testnet", is refused. `zyron-public-testnet-1` is not in
+the list.
+
+### Known gaps
+
+1. An online node can lie about its protocol. Lying *downward* now only causes a refusal;
+   lying *upward* produces a v2 transaction that a protocol-1 chain rejects. Neither path
+   signs v1.
+2. The PWA chooses the version per chain ID, not from `/protocol`. Making it
+   protocol-driven needs UI changes (`app.js` and the `index.html` version select), which
+   belong to Wallet Dev.
+3. `zyron-open-testnet-1` runs protocol 1 until its v6 activation height; during those
+   bootstrap heights CLI transfers are refused.
+4. `npm run devnet:check:v1-legacy` (protocol 1) fails by design at its transfer step, because
+   `l1/scripts/local-devnet.mjs` uses the CLI `transfer` (wallet path). It is not weakened;
+   #1147 moves the local devnet to protocol 3. `npm run devnet:check` now runs the v6 devnet (alias `devnet:check:v6`) on `zyron-devnet-1`.
+
+Follow-up: https://github.com/zyron249/-zyronchain/issues/1147

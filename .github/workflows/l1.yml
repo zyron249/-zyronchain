@@ -22,9 +22,8 @@ jobs:
   # The classify step only explains the result: a known F-01 stall becomes a
   # warning, any other failure an error (real regression). The F-01 fix is
   # protocol v6, run by local-devnet-v6. See docs/L1_TEST_RELIABILITY.md.
-  # TODO(#1146): once #1146 merges the CLI refuses protocol-1 chains (tracked
-  # in #1147), so switch the devnet step to `npm run devnet:check:v1-legacy`.
-  # That script does not exist before #1146, so this job still runs devnet:check.
+  # #1146: the CLI refuses protocol-1 chains (tracked in #1147), so this job
+  # runs the explicit `npm run devnet:check:v1-legacy` opt-in.
   local-devnet:
     name: local-devnet (protocol v1, informational, F-01 round-timer stall, fixed in v6)
     runs-on: ubuntu-latest
@@ -48,7 +47,7 @@ jobs:
       - name: Verify live two-validator local devnet (protocol v1)
         id: devnet
         shell: bash
-        run: npm run devnet:check 2>&1 | tee "$RUNNER_TEMP/local-devnet-v1.log"
+        run: npm run devnet:check:v1-legacy 2>&1 | tee "$RUNNER_TEMP/local-devnet-v1.log"
       - name: Classify protocol-v1 devnet result (F-01)
         if: always()
         shell: bash

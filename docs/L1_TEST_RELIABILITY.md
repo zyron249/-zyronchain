@@ -8,12 +8,12 @@ If a legitimate regression needs more than ten minutes, the test should be decom
 
 ## Devnet CI jobs and the known protocol-v1 F-01 stall
 
-Note: the v1 failures are not test flakiness. Protocol v1 has the known F-01 round-timer split that stalls finality; the fix is protocol v6. PR #1146 makes the CLI refuse protocol-1 chains (tracked in #1147). After #1146 merges, the `local-devnet` job moves to `npm run devnet:check:v1-legacy` (TODO in `.github/workflows/l1.yml`). The job stays informational and not required.
+Note: the v1 failures are not test flakiness. Protocol v1 has the known F-01 round-timer split that stalls finality; the fix is protocol v6. PR #1146 makes the CLI refuse protocol-1 chains (tracked in #1147), so the `local-devnet` job runs the explicit `npm run devnet:check:v1-legacy` path. The job stays informational and not required.
 
 | Job (check name) | Command | Protocol | Required check | Expected result |
 |---|---|---|---|---|
-| `local-devnet (protocol v1, informational, F-01 round-timer stall, fixed in v6)` | `npm run devnet:check` | v1 | no, informational | Known flake, about 50% pass (54/118 job attempts, 2026-10-13..16) |
-| `local-devnet-v6` | `npm run devnet:check:v6` | v6 | no; candidate (owner setting) | Pass: 117/118 job attempts over 98 runs, 2026-10-13..16; the one failure was a genuine TypeScript build break on a dependency PR |
+| `local-devnet (protocol v1, informational, F-01 round-timer stall, fixed in v6)` | `npm run devnet:check:v1-legacy` (fails by design until #1147) | v1 | no, informational | Known flake, about 50% pass (54/118 job attempts, 2026-10-13..16) |
+| `local-devnet-v6` | `npm run devnet:check:v6` (= `npm run devnet:check`) | v6 | no; candidate (owner setting) | Pass: 117/118 job attempts over 98 runs, 2026-10-13..16; the one failure was a genuine TypeScript build break on a dependency PR |
 
 `local-devnet` runs the two-validator chain on protocol v1, which still has the legacy F-01 consensus split (see [`V6_SAFETY_PROOF_OBLIGATIONS.md`](V6_SAFETY_PROOF_OBLIGATIONS.md) and the F-01 entries in [`L1_OPERATIONS_RUNBOOK.md`](L1_OPERATIONS_RUNBOOK.md)). Whether a run passes depends on which validator starts its round timer first. A controlled A/B on the same CI image gave 13/27 passes before the F-01 fix and 12/27 after, which is no statistical difference: the F-01 change did not cause it, and only activating v6 removes it. The fix lives in protocol v6, which `local-devnet-v6` exercises.
 
@@ -34,7 +34,7 @@ That failure gets a warning annotation "Protocol-v1 F-01 round-timer stall (fixe
 
 Recommendation (P1-04): make `local-devnet-v6` a required check. That is a branch-protection setting the owner controls; this repository does not change it.
 
-The test, its timeouts and the v1 harness startup order are deliberately unchanged: loosening them would hide the F-01 split instead of fixing it. The required checks are `l1` (Node 22 and 24), `dependency-audit`, `test` (Python 3.11 and 3.12) and `independent-light-client`. Neither devnet job is required. Interactive `npm run devnet` runs the same v1 path and may also need a restart.
+The test, its timeouts and the v1 harness startup order are deliberately unchanged: loosening them would hide the F-01 split instead of fixing it. The required checks are `l1` (Node 22 and 24), `dependency-audit`, `test` (Python 3.11 and 3.12) and `independent-light-client`. Neither devnet job is required. Interactive `npm run devnet` now defaults to protocol v6; only the explicit `--v1-legacy` opt-in runs the v1 path, which may also need a restart.
 
 Same-inode State-v2 cache mutation tests must change file size. Same-length writes can keep `size+mtimeMs+ctimeMs` identical on coarse-timestamp filesystems and produce a false pass.
 ## Real-socket tests that need a second loopback address

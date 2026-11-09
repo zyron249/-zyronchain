@@ -3,7 +3,9 @@ import {
   addressFromPublicKey,
   assertValidPublicKey,
   signCanonical,
+  publicKeyFromPrivate,
   signCanonicalDomain,
+  signMessageBytes,
   verifyCanonical,
   verifyCanonicalDomain
 } from "./crypto.js";
@@ -11,6 +13,12 @@ import { FIXED_FEE_MISMATCH_MESSAGE } from "./fee-policy.js";
 import { MINING_RETIRED_MESSAGE, MINING_TRACKER_ADDRESS } from "./mining.js";
 import { assertActivitySettlementWithinCap } from "./activity.js";
 import { MAX_SUPPLY_ATOMS } from "./types.js";
+import {
+  assertGenuineRenderedIntent,
+  assertRenderMatchesSigningBytes,
+  IntentRenderRefusal,
+  type RenderedIntent
+} from "./intent-render.js";
 import type {
   ActivityEntry,
   ActivityOracleApproval,
@@ -241,6 +249,40 @@ function signedPayload(tx: Omit<Transaction, "txid">): unknown {
   return payload;
 }
 
+/**
+ * Feature 6A wallet signing path (R1, R4). Signs ONLY the bytes rebuilt from a RenderedIntent
+ * produced by renderIntent; there is no parameter through which a caller can pass its own payload.
+ * Refuses unless the private key's public key equals payload.publicKey and payload.sender is derived
+ * from it. Every user-facing signer (CLI transfer, transfer-sign) must use this function.
+ */
+export function signTransfer(rendered: RenderedIntent, privateKeyHex: string): TransferTx {
+  assertGenuineRenderedIntent(rendered);
+  const payload = rendered.payload;
+  let ownPublicKey: string;
+  try {
+    ownPublicKey = publicKeyFromPrivate(privateKeyHex);
+  } catch {
+    throw new IntentRenderRefusal("signing key is invalid");
+  }
+  if (payload.publicKey !== ownPublicKey) throw new IntentRenderRefusal("payload publicKey is not this signer's key");
+  if (addressFromPublicKey(ownPublicKey) !== payload.sender) throw new IntentRenderRefusal("payload sender is not derived from this signer's key");
+  const bytes = Uint8Array.from(Buffer.from(rendered.signingBytesHex, "hex"));
+  assertRenderMatchesSigningBytes(rendered, bytes);
+  const signature = signMessageBytes(bytes, privateKeyHex);
+  if (!verifyCanonicalDomain(rendered.domain, payload, signature, ownPublicKey)) {
+    throw new IntentRenderRefusal("signature failed self-verification");
+  }
+  const withSignature = { ...payload, signature };
+  const tx: TransferTx = { ...withSignature, txid: sha256Hex(canonicalJson(withSignature)) };
+  validateTransactionShape(tx);
+  return tx;
+}
+
+/**
+ * Protocol-level transfer constructor for node internals, tests and devnet tooling (any version,
+ * any chain ID; consensus still accepts version 1). It is NOT a wallet signing path: user-facing
+ * signers must render first and call signTransfer (feature 6A, R1). A guard test keeps cli.ts off it.
+ */
 export function createTransfer(
   input: Omit<UnsignedTransfer, "kind" | "version" | "publicKey">,
   privateKeyHex: string,

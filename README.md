@@ -26,7 +26,7 @@ npm ci
 npm run devnet
 ```
 
-That command is the supported public-test surface today: local-only RPC on `127.0.0.1`, a fresh `zyron-local-<hex>` chain ID, and a verified 1 ZYN transfer. ZyronChain is not EVM; MetaMask cannot connect.
+That command is the supported public-test surface today: local-only RPC on `127.0.0.1`, a fresh genesis under the fixed local chain ID `zyron-devnet-1`, and a verified 1 ZYN transfer. ZyronChain is not EVM; MetaMask cannot connect.
 
 - Tester walkthrough (wallet, tokens, RPC, limitations): [Public tester guide](docs/PUBLIC_TEST.md)
 - Public-launch ready-vs-blocked map: [Public launch checklist](docs/PUBLIC_LAUNCH_CHECKLIST.md)
