@@ -14,7 +14,7 @@ services:
     plan: free
     region: ohio
     branch: main
-    autoDeploy: true
+    autoDeploy: false
     # Each deploy restarts the instance; blocks produced after the last
     # published snapshot are lost. Deploy only for changes that can affect the
     # service: everything it builds and runs is under l1/.
