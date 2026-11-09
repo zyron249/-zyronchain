@@ -15,12 +15,12 @@ const release = readFileSync(join(site, 'release.js'), 'utf8').match(/const RELE
 if (!release) throw new Error('website/release.js has no canonical RELEASE_REF');
 
 const assets = [
-  ['../site.css', join(site, 'site.css')],
-  ['./verify.css', join(site, 'verify', 'verify.css')],
-  ['./vendor/secp256k1-verify.js', join(site, 'verify', 'vendor', 'secp256k1-verify.js')],
-  ['./light-client.js', join(site, 'verify', 'light-client.js')],
-  ['./session.js', join(site, 'verify', 'session.js')],
-  ['./verify.js', join(site, 'verify', 'verify.js')]
+  ['/site.css', join(site, 'site.css')],
+  ['/verify/verify.css', join(site, 'verify', 'verify.css')],
+  ['/verify/vendor/secp256k1-verify.js', join(site, 'verify', 'vendor', 'secp256k1-verify.js')],
+  ['/verify/light-client.js', join(site, 'verify', 'light-client.js')],
+  ['/verify/session.js', join(site, 'verify', 'session.js')],
+  ['/verify/verify.js', join(site, 'verify', 'verify.js')]
 ];
 
 function version(file) {
