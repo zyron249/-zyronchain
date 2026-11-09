@@ -20,7 +20,7 @@ jest.mock('../src/keys', () => ({
     fn(new Uint8Array(32), { address: `ZYN${'12'.repeat(20)}`, publicKey: 'pk' }),
 }));
 // Dialog content is not under test here.
-jest.mock('../src/ui', () => ({ FeeRejectedWarning: () => null, MessageConfirmation: () => null, ThresholdConfirmation: () => null, TransferConfirmation: () => null }));
+jest.mock('../src/ui', () => ({ FeeRejectedWarning: () => null, HistorySaveFailedNotice: () => null, MessageConfirmation: () => null, ThresholdConfirmation: () => null, TransferConfirmation: () => null }));
 jest.mock('../src/zyron/message', () => ({ parseMessageRequest: () => 'm', signMessagePayload: () => 's' }));
 jest.mock('../src/zyron/transfer', () => {
   class TransactionRequestError extends Error {}
@@ -43,7 +43,7 @@ jest.mock('../src/rpc', () => ({
 
 import { onRpcRequest } from '../src/index';
 
-type Stored = { known: { contacts: unknown[]; sent: string[]; thresholdAtoms: number | null } } | null;
+type Stored = { known: { contacts: unknown[]; sent: string[]; thresholdAtoms: number | null }; schemaVersion?: number } | null;
 let stored: Stored;
 let duringDialog: (() => void) | undefined;
 

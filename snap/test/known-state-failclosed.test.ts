@@ -23,6 +23,7 @@ jest.mock('../src/keys', () => ({
 const mockDialogs: { kind: string; props: any }[] = [];
 jest.mock('../src/ui', () => ({
   FeeRejectedWarning: () => null,
+  HistorySaveFailedNotice: (props: unknown) => { mockDialogs.push({ kind: 'history-failed', props }); return null; },
   MessageConfirmation: () => null,
   ThresholdConfirmation: (props: unknown) => { mockDialogs.push({ kind: 'threshold', props }); return null; },
   TransferConfirmation: (props: unknown) => { mockDialogs.push({ kind: 'transfer', props }); return null; },
@@ -85,6 +86,9 @@ beforeEach(() => {
         }
       }
       if (method === 'snap_dialog') {
+        if (params?.type === 'alert') {
+          mockDialogs.push({ kind: 'alert', props: { type: 'alert' } });
+        }
         const hook = dialogHook;
         dialogHook = undefined;
         hook?.();
@@ -153,7 +157,9 @@ describe('fail closed on unreadable saved state', () => {
     expect(mockSubmit.calls).toBe(1);
     expect(r.ok).toBe(true);
     expect(r.v.txid).toBe('txid');
+    expect(r.v.historySaved).toBe(false);
     expect(stored).toBeNull();
+    expect(mockDialogs.some((d) => d.kind === 'alert' || d.kind === 'history-failed')).toBe(true);
   });
 });
 
@@ -225,10 +231,64 @@ describe('Low-B: only a submitted sendTransfer records the receiver', () => {
   });
 
   it('the receiver is recorded only after submitTransfer succeeds', async () => {
-    await send(RECEIVER);
+    const r = await send(RECEIVER);
     expect(submitCallsAtWrite).toStrictEqual([1]);
     expect(stored.known.sent).toStrictEqual([RECEIVER]);
+    expect(r.historySaved).toBe(true);
     await send(RECEIVER);
     expect(transferWarnings()[1]).not.toContain('first-time');
+  });
+});
+
+describe('Info: historySaved notice after a failed history write', () => {
+  it('a successful history write returns historySaved true and shows no history-failed alert', async () => {
+    const r = await send(RECEIVER);
+    expect(r.historySaved).toBe(true);
+    expect(mockDialogs.filter((d) => d.kind === 'alert' || d.kind === 'history-failed')).toHaveLength(0);
+  });
+
+  it('a failed history write returns the txid with historySaved false (never an error)', async () => {
+    mode.update = () => { throw new Error('write failed'); };
+    const r = await outcome(send(OTHER));
+    expect(r.ok).toBe(true);
+    expect(r.v.txid).toBe('txid');
+    expect(r.v.historySaved).toBe(false);
+    expect(mockSubmit.calls).toBe(1);
+  });
+});
+
+describe('Info: one-time migration for pre-#1199 null thresholds', () => {
+  it('an old null threshold without schemaVersion becomes the default on load', async () => {
+    stored = known([], null); // pre-#1199 shape: no schemaVersion
+    await call('zyron_signTransaction', tx(RECEIVER, DEFAULT_THRESHOLD_ATOMS));
+    expect(transferWarnings()[0]).toContain('large-amount');
+    expect(stored.schemaVersion).toBe(1);
+    expect(stored.known.thresholdAtoms).toBe(DEFAULT_THRESHOLD_ATOMS);
+  });
+
+  it('a confirmed disable after migration keeps thresholdAtoms null', async () => {
+    stored = known([], null);
+    await call('zyron_signTransaction', tx(RECEIVER)); // triggers migration
+    expect(stored.known.thresholdAtoms).toBe(DEFAULT_THRESHOLD_ATOMS);
+    expect(await call('zyron_setWarningThreshold', { thresholdAtoms: null })).toStrictEqual({ thresholdAtoms: null });
+    expect(stored.known.thresholdAtoms).toBeNull();
+    expect(stored.schemaVersion).toBe(1);
+    await call('zyron_signTransaction', tx(RECEIVER, 10 ** 12));
+    expect(transferWarnings().at(-1)).not.toContain('large-amount');
+  });
+
+  it('corrupt state is still blocked and is not repaired by migration', async () => {
+    mode.get = () => ({ known: { contacts: [], sent: [], thresholdAtoms: null, x: 1 } });
+    const r = await outcome(send(RECEIVER));
+    expect(r.ok).toBe(false);
+    expect(mockDialogs).toHaveLength(0);
+    expect(mockSubmit.calls).toBe(0);
+  });
+
+  it('an invalid schemaVersion fails closed and is not repaired', async () => {
+    mode.get = () => ({ known: { contacts: [], sent: [], thresholdAtoms: null }, schemaVersion: '1' });
+    const r = await outcome(call('zyron_signTransaction', tx(RECEIVER)));
+    expect(r.ok).toBe(false);
+    expect(mockDialogs).toHaveLength(0);
   });
 });

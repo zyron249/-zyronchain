@@ -20,7 +20,7 @@ import type { Account } from './keys';
 import { getAccount, withAccountKey } from './keys';
 import { RpcError, TESTNET_RPC_URL, getAccountState, getStatus, submitTransfer } from './rpc';
 import { fixedFeeRejection, type FeeGuardInput } from './fee-guard';
-import { FeeRejectedWarning, MessageConfirmation, ThresholdConfirmation, TransferConfirmation } from './ui';
+import { FeeRejectedWarning, HistorySaveFailedNotice, MessageConfirmation, ThresholdConfirmation, TransferConfirmation } from './ui';
 import { loadKnown, updateKnown } from './known-state';
 import type { KnownAddresses, SendWarning } from './send-warnings';
 import { recordSent, sendWarnings, setThreshold } from './send-warnings';
@@ -320,13 +320,26 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       // Record the receiver only after the gateway accepted the transfer. The
       // transfer is already submitted, so a failed history write must not turn
       // into an error (a retry could send twice); the receiver just stays
-      // unknown and gets the first-time warning next time.
-      await updateKnown((latest) => recordSent(latest, unsigned.receiver)).catch(() => undefined);
+      // unknown and gets the first-time warning next time. Signal that with
+      // historySaved:false and a non-blocking alert so the user knows.
+      let historySaved = true;
+      try {
+        await updateKnown((latest) => recordSent(latest, unsigned.receiver));
+      } catch {
+        historySaved = false;
+        await snap
+          .request({
+            method: 'snap_dialog',
+            params: { type: 'alert', content: <HistorySaveFailedNotice /> },
+          })
+          .catch(() => undefined);
+      }
       return {
         network: 'testnet',
         chainId: status.chainId,
         txid,
         transaction,
+        historySaved,
       } as unknown as Json;
     }
 

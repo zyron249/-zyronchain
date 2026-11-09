@@ -117,9 +117,16 @@ The large-amount warning is on by default at 1,000 ZYN. `zyron_setWarningThresho
 `{ thresholdAtoms }` (integer atoms, or `null` to disable the warning) and asks for confirmation
 before saving; disabling shows a dialog that says the warning is being disabled.
 
+Older installs that still have the pre-#1199 default (`thresholdAtoms: null` with no
+`schemaVersion`) are migrated once on the next read or write: the threshold becomes 1,000 ZYN and
+`schemaVersion` is set to `1`. After that migration, a `null` threshold saved through the confirmed
+disable dialog stays `null`. Corrupt state is never repaired; it still fails closed.
+
 Only a `zyron_sendTransfer` that the gateway accepted adds its receiver to the sent-to history. A
 sign-only `zyron_signTransaction` and a failed submit do not, so that receiver still gets the
-first-time warning next time.
+first-time warning next time. If the history write fails after a successful submit, the response
+still includes the `txid` and sets `historySaved: false`, and the Snap shows a non-blocking alert
+so the user knows the recipient was not recorded.
 
 ## Derivation path (provisional)
 

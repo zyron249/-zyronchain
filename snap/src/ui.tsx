@@ -177,6 +177,18 @@ export const SendWarnings = ({ warnings }: { warnings: SendWarning[] }) => {
   );
 };
 
+/** Non-blocking notice when the sent-to history could not be saved after a successful submit. */
+export const HistorySaveFailedNotice = () => (
+  <Box>
+    <Heading>Transfer submitted</Heading>
+    <Banner title="Sent-to history not saved" severity="warning">
+      <Text>
+        The transfer was submitted, but this Snap could not save the recipient in your sent-to history. The next send to that address may show the first-time warning again.
+      </Text>
+    </Banner>
+  </Box>
+);
+
 /** Confirmation for changing the large-amount warning threshold. */
 export const ThresholdConfirmation = ({ origin, thresholdAtoms }: { origin: string; thresholdAtoms: number | null }) => (
   <Box>
