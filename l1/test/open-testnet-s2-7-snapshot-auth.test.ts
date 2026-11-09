@@ -7,10 +7,7 @@
 // wiring (no HTTP auth on GET /state/snapshot; one shared "global" snapshot
 // limiter key). They FAIL on this base by design.
 //
-// CI choice: each test is marked `{ todo: true }` so the suite stays green
-// until the S2-7 fix PR lands and removes `todo`. Hard-fail evidence was
-// captured before commit (see PR body). Run without todo via:
-//   ZYRON_S27_STRICT=1 node --import tsx --test ...  (or strip todo locally)
+// Hard-failing acceptance evidence; this draft lands only with the green fix.
 //
 // No fixes, no live endpoints, no network beyond 127.0.0.1, no real secrets.
 // Fake tokens below are deliberately obvious and never logged by these tests.
@@ -32,8 +29,6 @@ const GENESIS_HASH = H(0);
 const FAKE_KEEPER_TOKEN = "test-fake-keeper-token-0001";
 const FAKE_BAD_TOKEN = "test-fake-invalid-token-9999";
 const STATE_SECRET_PRESENT = true; // route is only mounted when stateSecret is set
-const STRICT = process.env.ZYRON_S27_STRICT === "1";
-const todo = STRICT ? false : true;
 
 // Production-equivalent of the nested WindowLimiter at open-testnet.mjs ~1939
 // (not exported on this base). Shape matches :1960 — limit/window/maxKeys.
@@ -153,7 +148,6 @@ function bearer(token: string) {
 
 test(
   "S27 source: /state/snapshot authenticates before serveSnapshotRoute and does not share one global key",
-  { todo },
   async () => {
     const src = await readFile(join(l1Root, "scripts", "open-testnet.mjs"), "utf8");
     const routeIdx = src.indexOf('path === "/state/snapshot"');
@@ -181,7 +175,6 @@ test(
 
 test(
   "S27-T1 snapshot-route-rejects-unauthenticated",
-  { todo },
   async () => {
     const { snapshots, calls } = spySnapshots();
     const limiter = new ProdWindowLimiter(3, 3_600_000, 1);
@@ -209,7 +202,6 @@ test(
 
 test(
   "S27-T2 snapshot-route-rejects-before-cache-work",
-  { todo },
   async () => {
     const { snapshots, calls } = spySnapshots();
     const gw = await listenProductionSnapshotRoute(snapshots);
@@ -234,7 +226,6 @@ test(
 
 test(
   "S27-T3 snapshot-public-cannot-exhaust-keeper",
-  { todo },
   async () => {
     // Cap=3 for speed; production uses 30 — same shared-key shape (maxKeys=1).
     const { snapshots } = spySnapshots();
@@ -263,7 +254,6 @@ test(
 
 test(
   "S27-T4 snapshot-keeper-cache-not-evicted-by-public",
-  { todo },
   async () => {
     const { snapshots } = spySnapshots();
     const limiter = new ProdWindowLimiter(3, 3_600_000, 1);
@@ -297,7 +287,6 @@ test(
 
 test(
   "S27-T5 snapshot-auth-concurrency-isolation",
-  { todo },
   async () => {
     const { snapshots } = spySnapshots();
     // Shared production limiter: public and keeper contend on one key.
