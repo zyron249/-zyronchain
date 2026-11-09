@@ -101,29 +101,39 @@ hashes, so the files are protected by these controls:
   `TEST-FIXTURE-ONLY-loopback-quorum` is absent. The seal text and the quorum config may change.
   The boot loader applies the same byte-canonical and duplicate-key rule
   (`RESTORE_ANCHOR_CONFIG_INVALID`).
-  - The script is self-contained (Node built-ins only, no `l1/dist`), so CI runs the TRUSTED
-    copy: in the Standalone L1 job (`.github/workflows/l1.yml`) it is taken with
-    `git show <ref>:l1/scripts/t1-trust-append-only.mjs` from the merge base with `main` (pull
-    requests) or the previous `main` (pushes), never the change's own copy, except when that
-    ref has no script yet (bootstrap, logged as a warning).
+  - The script is self-contained (Node built-ins only, no `l1/dist`), so CI can run a copy
+    taken from `main` without building or running any code of the change under review.
+  - Tamper-proof check: `.github/workflows/l1-t1-trust-append-only.yml`. It runs under
+    `pull_request_target` for pull requests into `main` only, so GitHub runs this workflow
+    file and the checker exactly as they are on `main`; a PR cannot disable or edit either.
+    It checks out `main`, fetches the PR head as git data only and reads it with `git show`
+    through the checker; it never checks out, installs, builds, evaluates or runs PR content,
+    uses no secrets, has `contents: read` only and does not persist credentials. Its `edited`
+    trigger re-runs it when a PR is retargeted, so a stacked PR is checked once it targets
+    `main`. If the checker is missing on `main` the job fails. Its exact shape is pinned by
+    `.github/scripts/verify-l1-t1-trust-append-only-custody.mjs` (an allowlist, with a
+    mutation test). Only this job gives the "cannot be disabled by the PR" property.
+  - Defence in depth: the Standalone L1 job (`.github/workflows/l1.yml`) runs the same check
+    as its first step after checkout and Node setup, before `npm ci`, with the checker taken
+    by `git show <ref>:l1/scripts/t1-trust-append-only.mjs` from the merge base with `main`
+    (pull requests) or the previous `main` (pushes). That ref's copy is used, except when it
+    has none yet (bootstrap, logged as a warning). Because `l1.yml` is part of the change, a
+    PR can edit this step; it is not tamper-proof.
   - Pull requests are compared with `git merge-base origin/main HEAD` (`--merge-base`), not
-    with the PR's base SHA, so a stacked PR retargeted to `main` is compared with `main`.
-    Pushes to `main` are compared with `github.event.before` (`--push-before`); an all-zero
-    before SHA falls back to the first parent (or an empty base for a root commit), and an
-    unknown one fails closed.
-  - `.github/workflows/l1-t1-trust-append-only.yml` repeats the check under
-    `pull_request_target`, so it runs the base branch's workflow and checker, not the PR's,
-    and a PR cannot disable it by editing `l1.yml`. It fetches the PR head as git data only
-    (`git show`), never checks out, installs, builds or runs PR code, uses no secrets and has
-    `contents: read`. Its `edited` trigger re-runs it when a PR is retargeted.
+    with the PR's base SHA. Pushes to `main` are compared with `github.event.before`
+    (`--push-before`); an all-zero before SHA falls back to the first parent (or an empty base
+    for a root commit), and an unknown one fails closed.
+  - Bootstrap: until the change that adds the checker and the `pull_request_target` workflow
+    is on `main`, the tamper-proof job does not run at all (GitHub only runs it from `main`),
+    and the `l1.yml` step falls back to the change's own checker for every PR. Protection
+    starts when that change lands on `main`; the anchor-pin PR must come after it.
 - Review: every change to `l1/trust/` (and to the checker, the workflows and
   `l1/src/sealed-summary.ts`) needs a Zyron Security review and the owner's explicit merge OK.
   This is a process control, not a GitHub-enforced one.
-- `.github/CODEOWNERS` lists `/l1/trust/`, but it is ADVISORY only: the automation and the
-  owner use the same GitHub account, so the author is the code owner and GitHub cannot require
-  an independent code-owner review. Branch-protection hardening (required reviews, required
-  checks) is an owner decision that is still pending; until then no GitHub setting enforces
-  the review or the checks above.
+- CODEOWNERS review is advisory in this repository (`.github/CODEOWNERS` lists `/l1/trust/`).
+  Enforcement is the append-only CI check plus Security review plus the owner's explicit merge
+  OK. Branch protection (required reviews, required checks) is an owner decision still
+  pending; until then no GitHub setting enforces the review or the checks above.
 
 Record kinds: `revoke-key { keyId }` (the key is `revoked: true`), `supersede-key { keyId,
 supersededAtHeight }` (the key only covers summaries with `height < supersededAtHeight`),
@@ -172,16 +182,21 @@ not a quorum). The pinned config must list distinct URLs from at least two sites
   literal is its own site. So port, trailing-dot and subdomain variants of one host are one
   site. The rule is conservative: tenants of one shared hosting suffix count as one site.
 - Non-public hosts are refused (`RESTORE_ANCHOR_CONFIG_INVALID`): localhost, `.local`,
-  `.internal`; IPv4 loopback, unspecified, RFC 1918, CGNAT, link-local, 192.0.0.0/24,
-  documentation ranges, 198.18.0.0/15, multicast and reserved; IPv6 loopback, unspecified,
-  `::/96` and `::ffff:0:0/96`, NAT64 `64:ff9b::/96` and `64:ff9b:1::/48`, 6to4 `2002::/16`,
-  Teredo `2001::/32`, `2001:db8::/32`, unique-local, link-local and multicast.
+  `.internal`; IPv4 0/8, loopback, RFC 1918, CGNAT, link-local, 192.0.0.0/24, documentation
+  ranges, 6to4 relay anycast 192.88.99.0/24, 198.18.0.0/15, multicast and reserved; IPv6
+  `::/8` (unspecified, loopback, IPv4-compatible and IPv4-mapped), discard `100::/64`, NAT64
+  `64:ff9b::/96` and `64:ff9b:1::/48`, Teredo `2001::/32`, `2001:2::/48`, `2001:db8::/32`,
+  6to4 `2002::/16`, unique-local `fc00::/7`, link-local `fe80::/10`, site-local `fec0::/10`
+  and multicast `ff00::/8`. IPv6 addresses are parsed into their eight groups first; one that
+  does not parse is refused.
 - Resolved addresses: before any request the quorum reader resolves every source host (all
   addresses) and refuses the read (`RESTORE_ANCHOR_CONFIG_INVALID`) if any address is
   non-public, so a public-looking name that points at a private address (nip.io style) fails.
-  A lookup failure counts that source as not answering. `fetch` resolves the name again, so
-  this does not pin the address against DNS rebinding; the tip relies on the secp256k1
-  attestations, not on the transport.
+  A lookup failure counts that source as not answering. The request then connects only to the
+  first checked address (`pinnedFetch`: `node:https` / `node:http` with a per-request `lookup`
+  that returns the pinned address and a fresh agent), while the URL keeps the hostname, so SNI,
+  certificate verification and the `Host` header use the name. A rebinding answer between the
+  check and the request is never used. The tip still rests on the secp256k1 attestations.
 - `http://127.0.0.1` sources (each port its own site) are accepted only in a local test fixture
   trust directory that carries the `TEST-FIXTURE-ONLY-loopback-quorum` marker, which the CI
   check above keeps out of the repository; they are not resolved. Two verified tips -> `RESTORE_QUORUM_TIP_MISMATCH`; deadline ->
@@ -256,7 +271,7 @@ renamed or written, and an operator inspects and removes them. Nothing is delete
   zeroes the Buffer (`fill(0)`). It refuses key material on the command line or in the
   environment and prints only `{"keyId","signature"}`.
 - Independence is weaker than a separate machine: the signer runs on the same shared machine
-  as the office agents, so a compromise of that machine can reach the key file. The live quorum
+  as other automated tooling, so a compromise of that machine can reach the key file. The live quorum
   tip match and PR review of every seal limit what a stolen key can do alone.
 - Rotation (PR, Patron + Security): pin the new key; append `supersede-key { old keyId,
   supersededAtHeight }`; publish the next seal under the new key.
