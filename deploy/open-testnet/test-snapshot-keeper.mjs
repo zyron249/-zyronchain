@@ -13,13 +13,15 @@ const workflow = join(repo, '.github', 'workflows', 'open-testnet-snapshot-keepe
 const PIN = '11'.repeat(32);
 const OTHER = '22'.repeat(32);
 const FAKE_SECRET = 'test-fake-state-secret-legacy-keeper';
-const DERIVED = createHmac('sha256', FAKE_SECRET).update('zyron-open-testnet-snapshot-keeper-v1', 'utf8').digest('hex');
+const bearerOf = (secret) => createHmac('sha256', secret).update('zyron-open-testnet-snapshot-keeper-v1', 'utf8').digest('hex');
+const DERIVED = bearerOf(FAKE_SECRET);
+const DUMMY_SECRET = 'dummy-secret-0123456789abcdef';
 
 function pinText(hash) {
   return `env:\n  EXPECTED_GENESIS: ${hash}\n`;
 }
 
-function run({ genesis = PIN, pin = pinText(PIN), pinFile = true, height = '12', secret = FAKE_SECRET, once = true, withoutNode = false, onStdout = null }) {
+function run({ genesis = PIN, pin = pinText(PIN), pinFile = true, height = '12', secret = FAKE_SECRET, once = true, withoutNode = false, onStdout = null, bashArgs = [], extraEnv = {}, killAfterMs = 20_000 }) {
   const dir = mkdtempSync(join(tmpdir(), 'zyron-keeper-'));
   const bin = join(dir, 'bin');
   const log = join(dir, 'gh.log');
@@ -79,18 +81,24 @@ printf 'sealed' > "$out"
         ZYRON_TESTNET_STATE_SECRET: secret,
         ...(pinFile ? { PIN_FILE: join(dir, 'pin.yml') } : {})
     };
+    Object.assign(env, extraEnv);
     if (secret === null) delete env.ZYRON_TESTNET_STATE_SECRET;
-    const child = spawn('/bin/bash', [script], { env });
+    // Own process group, so a hang can be cleaned up by this child's PID alone.
+    const child = spawn('/bin/bash', [...bashArgs, script], { env, detached: true });
+    const killer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }, killAfterMs);
     let stderr = '';
     let stdout = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; if (onStdout) onStdout(stdout, child); });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', reject);
     child.on('close', (code, signal) => {
+      clearTimeout(killer);
       const read = (p) => { try { return readFileSync(p, 'utf8'); } catch { return ''; } };
       // The secret value must never reach stdout or stderr, in any run.
-      if (FAKE_SECRET && (stdout.includes(FAKE_SECRET) || stderr.includes(FAKE_SECRET))) reject(new Error('the state secret appeared in the keeper output'));
-      if (stdout.includes(DERIVED) || stderr.includes(DERIVED)) reject(new Error('the keeper bearer appeared in the keeper output'));
+      // The secret value and its bearer must never reach stdout or stderr, in any run.
+      if (secret && (stdout.includes(secret) || stderr.includes(secret))) return reject(new Error('the state secret appeared in the keeper output'));
+      const bearer = secret ? bearerOf(secret) : DERIVED;
+      if (stdout.includes(bearer) || stderr.includes(bearer)) return reject(new Error('the keeper bearer appeared in the keeper output'));
       resolve({ code, signal, stdout, stderr, gh: read(log), curl: read(curlLog), auth: read(authLog), tmpLeft: readdirSync(tmp) });
     });
   });
@@ -180,7 +188,7 @@ test('the bearer file is 0600 in a private mktemp -d directory and is removed on
 });
 
 for (const [sig, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
-  test(`the bearer file is removed when the keeper is stopped by ${sig} while it waits`, async () => {
+  test(`the bearer file is removed when the keeper is stopped by ${sig} while it waits`, { timeout: 30_000 }, async () => {
     let sent = false;
     const result = await run({ once: false, onStdout: (out, child) => { if (!sent && /published height/.test(out)) { sent = true; setTimeout(() => child.kill(sig), 200); } } });
     assert.equal(sent, true, 'the keeper published one cycle before the signal');
@@ -208,3 +216,16 @@ test('the machine keeper script never echoes, logs or passes the secret or beare
   assert.match(code, /mktemp -d/);
   assert.match(code, /unset ZYRON_TESTNET_STATE_SECRET/);
 });
+
+for (const [label, opts] of [['bash -x', { bashArgs: ['-x'] }], ['SHELLOPTS=xtrace', { extraEnv: { SHELLOPTS: 'xtrace' } }]]) {
+  test(`under ${label} the dummy secret and its derived token never appear in stdout or stderr`, { timeout: 30_000 }, async () => {
+    const result = await run({ secret: DUMMY_SECRET, ...opts }).catch((error) => ({ error }));
+    assert.equal(result.error, undefined, String(result.error?.message ?? ''));
+    assert.equal(result.code, 0);
+    assert.match(result.stderr, /^\+ /m, 'xtrace was actually on');
+    assert.equal(result.stdout.includes(DUMMY_SECRET) || result.stderr.includes(DUMMY_SECRET), false, 'dummy secret leaked');
+    assert.equal(result.stdout.includes(bearerOf(DUMMY_SECRET)) || result.stderr.includes(bearerOf(DUMMY_SECRET)), false, 'derived token leaked');
+    assert.equal(result.curl, `Authorization: Bearer ${bearerOf(DUMMY_SECRET)}\n`, 'the keeper still sent the derived token');
+    assert.deepEqual(result.tmpLeft, []);
+  });
+}

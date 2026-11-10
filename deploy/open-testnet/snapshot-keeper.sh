@@ -32,7 +32,8 @@ PIN_REF="${PIN_REF:-main}"
 WORK="${WORK:-$HOME/.zyron-snapshot-keeper}"
 mkdir -p "$WORK"; chmod 700 "$WORK"
 
-if [[ -z "${ZYRON_TESTNET_STATE_SECRET:-}" ]]; then
+# ${VAR:+set} expands to "set" or nothing, so xtrace never shows the secret.
+if [[ -z "${ZYRON_TESTNET_STATE_SECRET:+set}" ]]; then
   echo "refusing to start: ZYRON_TESTNET_STATE_SECRET is missing or empty; the gateway serves /state/snapshot only to the keeper bearer" >&2
   exit 1
 fi
