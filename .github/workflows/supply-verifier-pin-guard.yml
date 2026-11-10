@@ -4,7 +4,12 @@ name: Supply Verifier Pin Guard (main checker)
 # "Pin guard"). pull_request_target on PRs into main only: GitHub runs THIS
 # file and the checker exactly as they are on main, so a PR cannot edit or
 # disable the check it is judged by. labeled/unlabeled re-run it when the
-# approval label changes. main's TypeScript is installed from MAIN's
+# approval label changes. Label timing: when the label is required, only a
+# `labeled` event for patron-approved-pin on the current PR head passes, so
+# the approval must come after the last push. synchronize, opened, reopened,
+# unlabeled or another label fail until the label is removed and re-applied.
+# Branch protection uses the latest run of this check on the head SHA, so a
+# push after labelling turns it red. No extra permissions are needed. main's TypeScript is installed from MAIN's
 # l1/package-lock.json with --ignore-scripts BEFORE any PR data is fetched.
 # The PR head is then fetched as git data only and read with git show / git
 # diff; the checker rebuilds the tar from those bytes with main's tsconfig,
@@ -20,7 +25,9 @@ name: Supply Verifier Pin Guard (main checker)
 #   against main's dependencies. The label does not override this.
 # - Such toolchain PRs land on their own, with Security's independent rebuild.
 # .github/scripts/verify-supply-verifier-pin-guard-custody.mjs pins the exact
-# shape of this file; change both together.
+# lines of this file, lints them, and parses it with a strict YAML subset
+# parser against a structural allowlist (keys, the one job, steps, env, every
+# run command). Comments are free; change anything else in both together.
 
 on:
   pull_request_target:

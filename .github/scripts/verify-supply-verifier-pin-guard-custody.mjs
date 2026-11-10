@@ -17,6 +17,11 @@
 // a run script that writes files or puts PR content on disk (for example a
 // fallback to the PR's l1/package-lock.json),
 // ${{ }} in the run script, ref:, if:, continue-on-error.
+// A third, independent layer parses the YAML with a strict subset parser and
+// checks it against a structural allowlist (top-level keys with nothing after
+// jobs:, no duplicate keys, one job with allowlisted keys, exact steps, every
+// run: command on an allowlist, no env injection); see verifyPinGuardStructure.
+// All three layers must pass.
 // Any change to the workflow must change this list in the same reviewed PR.
 import { readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
@@ -112,6 +117,241 @@ export function lintPinGuardWorkflow(lines) {
   if (!/^          set -euo pipefail$/m.test(run) || !/^            exit 1$/m.test(run)) fail('the run script must fail closed');
 }
 
+// ---------------------------------------------------------------------------
+// Structural allowlist on a real parse of the YAML (Security finding 1 on
+// #1216). It is independent of EXPECTED_LINES and of the regex rules above.
+// All three must pass. The parser is a minimal STRICT subset of YAML written
+// here so the check needs nothing outside this file (no npm dependencies, so
+// it runs anywhere main's checkout is, before any install). Anything outside
+// the subset is refused instead of being interpreted: only 2-space block
+// mappings, block sequences of mappings, plain or quoted scalars, one-line
+// flow sequences of plain words, and plain `|` block scalars are accepted.
+// Refused: duplicate keys at any level, anchors, aliases and merge keys,
+// tags, flow mappings, `---` / `...` documents and directives, `|-` `|+` `>`,
+// complex or quoted keys, backslash escapes, non-ASCII or control bytes
+// (NBSP, zero-width, RTL override, fullwidth marks), TAB and CR.
+// ---------------------------------------------------------------------------
+
+function yamlFail(lineNo, reason) { fail(`YAML line ${lineNo}: ${reason}`); }
+const KEY_RE = /^([A-Za-z_][A-Za-z0-9_-]*):(?: (.*))?$/;
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** Parses the strict subset into plain objects, arrays and strings. */
+export function parseStrictYaml(text) {
+  if (/[^\n\x20-\x7e]/.test(text)) {
+    const at = text.search(/[^\n\x20-\x7e]/);
+    yamlFail(text.slice(0, at).split('\n').length, `byte 0x${text.charCodeAt(at).toString(16)} is not allowed (ASCII only; no TAB, CR, NBSP, zero-width or bidi characters)`);
+  }
+  const lines = text.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  for (const [i, line] of lines.entries()) if (/^(?:---|\.\.\.)(?:\s|$)|^%/.test(line)) yamlFail(i + 1, 'document markers and directives are not allowed (one document only)');
+  let pos = 0;
+  const ignorable = (line) => line.trim() === '' || line.trimStart().startsWith('#');
+  const skip = () => { while (pos < lines.length && ignorable(lines[pos])) pos += 1; };
+  const indentOf = (line) => line.length - line.trimStart().length;
+
+  function scalar(raw, lineNo) {
+    if (raw.startsWith('[')) {
+      const m = raw.match(/^\[([^\]]*)\](?: #.*)?$/);
+      if (!m) yamlFail(lineNo, 'malformed flow sequence');
+      const items = m[1].split(',').map((s) => s.trim());
+      if (items.some((s) => !/^[A-Za-z0-9_./-]+$/.test(s))) yamlFail(lineNo, 'flow sequences may hold plain words only');
+      return items;
+    }
+    if (/^[{&*!%@`|>?]/.test(raw) || /^- /.test(raw) || raw === '-') yamlFail(lineNo, `unsupported YAML construct ${JSON.stringify(raw.slice(0, 20))} (no flow mappings, anchors, aliases, tags or block indicators here)`);
+    if (raw.startsWith("'")) {
+      const m = raw.match(/^'((?:[^']|'')*)'(?: #.*)?$/);
+      if (!m) yamlFail(lineNo, 'malformed single-quoted scalar');
+      return m[1].replace(/''/g, "'");
+    }
+    if (raw.startsWith('"')) {
+      const m = raw.match(/^"([^"\\]*)"(?: #.*)?$/);
+      if (!m) yamlFail(lineNo, 'malformed double-quoted scalar (backslash escapes are not allowed)');
+      return m[1];
+    }
+    const value = raw.replace(/ #.*$/, '').replace(/ +$/, '');
+    if (value === '' || /: |:$/.test(value) || value.startsWith('#')) yamlFail(lineNo, `ambiguous plain scalar ${JSON.stringify(value)}`);
+    return value;
+  }
+
+  function blockScalar(parentIndent, lineNo) {
+    const body = [];
+    let blockIndent = null;
+    while (pos < lines.length) {
+      const line = lines[pos];
+      if (line.trim() === '') { body.push(''); pos += 1; continue; }
+      const ind = indentOf(line);
+      if (blockIndent === null) {
+        if (ind <= parentIndent) break;
+        blockIndent = ind;
+      }
+      if (ind < blockIndent) {
+        if (ind > parentIndent) yamlFail(pos + 1, 'block scalar line is less indented than the block');
+        break;
+      }
+      body.push(line.slice(blockIndent));
+      pos += 1;
+    }
+    while (body.length && body.at(-1) === '') body.pop();
+    if (blockIndent === null || body.length === 0) yamlFail(lineNo, 'empty block scalar');
+    return `${body.join('\n')}\n`;
+  }
+
+  function mapping(indent, firstLine = null) {
+    const out = {};
+    let first = firstLine;
+    for (;;) {
+      let line;
+      let lineNo;
+      if (first !== null) { line = first.text; lineNo = first.lineNo; first = null; }
+      else {
+        skip();
+        if (pos >= lines.length) break;
+        const ind = indentOf(lines[pos]);
+        if (ind < indent) break;
+        if (ind > indent) yamlFail(pos + 1, `unexpected indentation (expected ${indent} spaces)`);
+        line = lines[pos].slice(indent);
+        lineNo = pos + 1;
+        if (line.startsWith('- ') || line === '-') break;
+        pos += 1;
+      }
+      const m = line.match(KEY_RE);
+      if (!m) yamlFail(lineNo, `not a plain "key: value" entry: ${JSON.stringify(line.slice(0, 40))}`);
+      const [, key, raw = ''] = m;
+      if (FORBIDDEN_KEYS.has(key)) yamlFail(lineNo, `key ${key} is not allowed`);
+      if (Object.hasOwn(out, key)) yamlFail(lineNo, `duplicate key ${JSON.stringify(key)}`);
+      if (raw === '' || /^#/.test(raw)) {
+        skip();
+        if (pos >= lines.length || indentOf(lines[pos]) <= indent) yamlFail(lineNo, `key ${JSON.stringify(key)} has no value`);
+        out[key] = node(indent + 2);
+      } else if (raw === '|') {
+        out[key] = blockScalar(indent, lineNo);
+      } else {
+        out[key] = scalar(raw, lineNo);
+      }
+    }
+    return out;
+  }
+
+  function sequence(indent) {
+    const out = [];
+    for (;;) {
+      skip();
+      if (pos >= lines.length) break;
+      const ind = indentOf(lines[pos]);
+      if (ind < indent) break;
+      if (ind > indent) yamlFail(pos + 1, `unexpected indentation (expected ${indent} spaces)`);
+      const line = lines[pos].slice(indent);
+      if (!line.startsWith('- ')) break;
+      const lineNo = pos + 1;
+      const rest = line.slice(2);
+      if (!KEY_RE.test(rest)) yamlFail(lineNo, 'sequence items must be block mappings ("- key: value")');
+      pos += 1;
+      out.push(mapping(indent + 2, { text: rest, lineNo }));
+    }
+    return out;
+  }
+
+  function node(indent) {
+    skip();
+    const ind = indentOf(lines[pos]);
+    if (ind !== indent) yamlFail(pos + 1, `unexpected indentation (expected ${indent} spaces)`);
+    const line = lines[pos].slice(indent);
+    return line.startsWith('- ') ? sequence(indent) : mapping(indent);
+  }
+
+  skip();
+  if (pos >= lines.length) fail('YAML: empty document');
+  const doc = mapping(0);
+  skip();
+  if (pos < lines.length) yamlFail(pos + 1, 'content after the top-level mapping');
+  return doc;
+}
+
+const isMap = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+function keysExactly(where, value, keys) {
+  if (!isMap(value)) fail(`${where} must be a mapping`);
+  const actual = Object.keys(value);
+  if (actual.length !== keys.length || actual.some((k, i) => k !== keys[i])) fail(`${where} keys must be exactly [${keys.join(', ')}] in that order, found [${actual.join(', ')}]`);
+}
+function equalExactly(where, actual, expected) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`${where} must be ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}`);
+}
+
+// Env names that change how bash, node, git, npm or the runner behave.
+export const FORBIDDEN_ENV_RE = /^(?:BASH_ENV|ENV|BASH_FUNC_.*|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|IFS|CDPATH|GLOBIGNORE|PATH|HOME|TMPDIR|NODE_OPTIONS|NODE_PATH|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED|NODE_NO_WARNINGS|LD_.*|DYLD_.*|GIT_.*|NPM_.*|npm_.*|PYTHON.*|PERL5.*|PERLLIB|RUBYOPT|RUBYLIB|GITHUB_.*|RUNNER_.*|ACTIONS_.*|INPUT_.*|STATE_.*)$/i;
+export const ALLOWED_STEP_ENV = Object.freeze({
+  PR_NUMBER: '${{ github.event.pull_request.number }}',
+  PR_HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
+});
+// Every command any run: (single-line or block) may contain, exactly.
+export const ALLOWED_COMMANDS = Object.freeze([
+  'npm ci --ignore-scripts --no-audit --no-fund',
+  'set -euo pipefail',
+  '[[ "$PR_NUMBER" =~ ^[0-9]+$ && "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]',
+  'git fetch --no-tags --quiet origin \'+refs/heads/main:refs/remotes/origin/main\' "+refs/pull/$PR_NUMBER/head:refs/remotes/pr/head"',
+  'git cat-file -e "$PR_HEAD_SHA^{commit}"',
+  'if [ ! -f .github/scripts/verify-supply-verifier-pin-guard.mjs ]; then',
+  '  echo "::error::main has no .github/scripts/verify-supply-verifier-pin-guard.mjs; the pin guard cannot run"',
+  '  exit 1',
+  'fi',
+  'node .github/scripts/verify-supply-verifier-pin-guard.mjs --merge-base origin/main --head "$PR_HEAD_SHA" --event "$GITHUB_EVENT_PATH" --toolchain l1/node_modules --scratch "$RUNNER_TEMP/pin-guard"',
+]);
+const CHECK_RUN = ALLOWED_COMMANDS.slice(1);
+export const EXPECTED_STEPS = Object.freeze([
+  { name: 'Checkout main (trusted checker)', uses: CHECKOUT, with: { 'persist-credentials': 'false', 'fetch-depth': '0' } },
+  { name: 'Set up Node.js', uses: SETUP_NODE, with: { 'node-version-file': 'tools/supply-verifier/.nvmrc' } },
+  { name: "Install main's l1 TypeScript toolchain (main's lockfile, no install scripts)", 'working-directory': 'l1', run: [ALLOWED_COMMANDS[0]] },
+  { name: 'Check the PR head pin against the merge base with main (data only)', shell: 'bash', env: ALLOWED_STEP_ENV, run: CHECK_RUN },
+]);
+const JOB_ID = 'supply-verifier-pin-guard';
+
+/** Structural allowlist on the parsed workflow. */
+export function verifyPinGuardStructure(doc) {
+  keysExactly('top level', doc, ['name', 'on', 'permissions', 'concurrency', 'jobs']);
+  equalExactly('name', doc.name, 'Supply Verifier Pin Guard (main checker)');
+  keysExactly('on', doc.on, ['pull_request_target']);
+  keysExactly('on.pull_request_target', doc.on.pull_request_target, ['branches', 'types']);
+  equalExactly('on.pull_request_target.branches', doc.on.pull_request_target.branches, ['main']);
+  equalExactly('on.pull_request_target.types', doc.on.pull_request_target.types, ['opened', 'synchronize', 'reopened', 'labeled', 'unlabeled']);
+  keysExactly('permissions', doc.permissions, ['contents']);
+  equalExactly('permissions.contents', doc.permissions.contents, 'read');
+  keysExactly('concurrency', doc.concurrency, ['group', 'cancel-in-progress']);
+  equalExactly('concurrency.group', doc.concurrency.group, '${{ github.workflow }}-${{ github.event.pull_request.number }}');
+  equalExactly('concurrency.cancel-in-progress', doc.concurrency['cancel-in-progress'], 'true');
+  keysExactly('jobs', doc.jobs, [JOB_ID]);
+  const job = doc.jobs[JOB_ID];
+  keysExactly(`jobs.${JOB_ID} (no container, services, defaults, env, if, permissions, strategy or other job keys)`, job, ['runs-on', 'timeout-minutes', 'steps']);
+  equalExactly('runs-on', job['runs-on'], 'ubuntu-latest');
+  equalExactly('timeout-minutes', job['timeout-minutes'], '10');
+  if (!Array.isArray(job.steps) || job.steps.length !== EXPECTED_STEPS.length) fail(`exactly ${EXPECTED_STEPS.length} steps are allowed`);
+  job.steps.forEach((step, i) => {
+    const want = EXPECTED_STEPS[i];
+    const where = `step ${i + 1}`;
+    keysExactly(where, step, Object.keys(want));
+    if (isMap(step.env)) {
+      for (const name of Object.keys(step.env)) {
+        if (FORBIDDEN_ENV_RE.test(name)) fail(`${where}: env ${name} is an injection vector and is not allowed`);
+        if (!Object.hasOwn(ALLOWED_STEP_ENV, name)) fail(`${where}: env ${name} is not on the allowlist`);
+      }
+    }
+    if (Object.hasOwn(step, 'run')) {
+      if (typeof step.run !== 'string') fail(`${where}: run must be a string`);
+      if (/\$\{\{/.test(step.run)) fail(`${where}: \${{ }} is not allowed in run`);
+      const commands = step.run.replace(/\n$/, '').split('\n');
+      for (const command of commands) if (!ALLOWED_COMMANDS.includes(command)) fail(`${where}: run command not on the allowlist: ${JSON.stringify(command.slice(0, 120))}`);
+      equalExactly(`${where} run commands`, commands, want.run);
+    }
+    for (const key of Object.keys(want)) if (key !== 'run') equalExactly(`${where} ${key}`, step[key], want[key]);
+  });
+  return true;
+}
+
+/** Parse plus structural allowlist, on the raw workflow text. */
+export function lintPinGuardStructure(text) {
+  return verifyPinGuardStructure(parseStrictYaml(text));
+}
+
 export function verifyPinGuardWorkflow(text) {
   const actual = significantLines(text);
   const length = Math.max(actual.length, EXPECTED_LINES.length);
@@ -121,6 +361,7 @@ export function verifyPinGuardWorkflow(text) {
     }
   }
   lintPinGuardWorkflow(actual);
+  lintPinGuardStructure(text);
   return true;
 }
 

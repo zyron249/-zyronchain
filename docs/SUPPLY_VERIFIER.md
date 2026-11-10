@@ -72,9 +72,12 @@ Against the merge base with `main`, the checker:
 1. Requires `EXPECTED_SHA256` to exist and be well-formed.
 2. Rebuilds the tar from the PR's files with `main`'s `l1/tsconfig.json`, TypeScript, `build.mjs`, and `hash.mjs`, whenever the pin or a hashed input changed. The result must equal the PR's pin, which also catches an input change without a pin update. It prints the per-file `MANIFEST.sha256` diff between the merge base and the head, and writes it to the job summary.
 3. Fails a pin move when no hashed input changed.
-4. Requires the label `patron-approved-pin` when the pin changes, or when one of these files changes: `l1/src/tokenomics.ts`, `l1/src/supply-report.ts`, `l1/src/allocation-locks.ts`, `l1/src/miner-genesis.ts`, `l1/src/founder-vesting.ts`, `l1/genesis-message.json`, `docs/fixed-supply-launch-plan.json`, `l1/scripts/validate-fixed-supply-genesis.mjs`, `tools/supply-verifier/src/**`, or `tools/supply-verifier/*.mjs`.
+4. Requires the label `patron-approved-pin` when the pin changes, or when one of these files changes: `l1/src/tokenomics.ts`, `l1/src/supply-report.ts`, `l1/src/allocation-locks.ts`, `l1/src/miner-genesis.ts`, `l1/src/founder-vesting.ts`, `l1/genesis-message.json`, `docs/fixed-supply-launch-plan.json`, `l1/scripts/validate-fixed-supply-genesis.mjs`, `l1/scripts/verify-genesis-message.mjs`, `l1/scripts/verify-trading-activation.mjs`, `l1/src/types.ts`, `l1/src/public-distribution-release.ts`, `tools/supply-verifier/src/**`, or `tools/supply-verifier/*.mjs`. The two `l1/scripts/verify-*.mjs` scripts are outside the tar, so the pin doesn't move when they change. `l1/src/types.ts` (`MAX_SUPPLY_ATOMS`) and `l1/src/public-distribution-release.ts` are in the tar and are listed as a second line of defense. A test checks that every entry exists.
+5. Checks label timing when the label is required. The check passes only on a `labeled` event for `patron-approved-pin` itself, and only when the head in the event is still the PR head that the run fetched. That means the approval came after the last push. A `synchronize`, `opened`, `reopened` or `unlabeled` event fails, and so does a `labeled` event for any other label or a re-run of an older `labeled` run after a push. The error tells the reviewer to remove the label and add it again on the current head.
 
-The label is only a second gate. Checks 1 to 3 fail even when the label is present.
+The label is only a second gate. Checks 1 to 3 fail even when the label is present and freshly applied.
+
+How label timing shows up in branch protection: a required check must have a successful, skipped or neutral result on the PR's head SHA, and only the latest run of a check name on that SHA counts. A push creates a new head SHA, and the `synchronize` run for it fails, so the check stays red until the label is re-applied. A later event on the same SHA, such as another label added or removed, starts a new run that fails and replaces the green one. A run cancelled by the `concurrency` group isn't a success. None of this needs more than `contents: read`. It still has to be confirmed on this repository once the workflow is on `main`, because no `pull_request_target` workflow runs here yet. Trade-off: after any label change on an approved head, someone has to add the label again.
 
 Toolchain rules (decided by Patron):
 
@@ -84,11 +87,22 @@ Toolchain rules (decided by Patron):
 
 Limits:
 
-- The label is advisory. Every bot acts through the same `zyron249` account, so any of them can add it, and the event payload doesn't show whether the label was added after the last push. A label-timing check, requiring the label to be added after the last push, is a required follow-up. It must land before the guard is proposed as a required check.
+- The label is advisory. Every bot acts through the same `zyron249` account, so any of them can add it. Label timing proves when the label was added, not who added it.
 - The guard blocks a merge only once branch protection makes it a required check, and that is the repository owner's decision.
 - Security's independent rebuild (CONTRIBUTING.md) stays mandatory.
 
-`.github/workflows/supply-verifier-pin-guard-custody-policy.yml` pins the workflow's exact shape and runs the mutation and fixture tests.
+`.github/workflows/supply-verifier-pin-guard-custody-policy.yml` checks the workflow in three ways, and all three must pass:
+
+- It pins the exact lines.
+- It runs a static lint.
+- It parses the file with a strict YAML-subset parser. The parser has no dependencies and refuses duplicate keys, anchors, tags, flow mappings, folded or chomped block scalars, escapes and non-ASCII characters. The parsed file is then checked against a structural allowlist:
+  - the top-level keys, with nothing after `jobs:`;
+  - exactly one job, with only `runs-on`, `timeout-minutes` and `steps` (no `container`, `services`, `defaults`, job `env` or `if`);
+  - exactly four steps, each with exactly its keys;
+  - step `env` limited to `PR_NUMBER` and `PR_HEAD_SHA`, with injection names such as `BASH_ENV`, `NODE_OPTIONS`, `LD_*` and `GIT_*` refused by name;
+  - every `run:` line checked against a command allowlist.
+
+The custody policy also runs the mutation tests, including every bypass from Security's #1216 proof-of-concept files.
 
 ### Publishing hashes
 
