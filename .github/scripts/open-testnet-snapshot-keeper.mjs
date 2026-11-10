@@ -52,6 +52,7 @@
 // The only credential is the workflow GITHUB_TOKEN (contents: write, for the
 // release assets).
 import { createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { deriveSnapshotKeeperBearer } from "../../l1/scripts/open-testnet/snapshot-bearer.mjs";
 import { gunzipSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { appendFile } from "node:fs/promises";
@@ -823,7 +824,14 @@ export function retryDelayMs(attempt, { baseMs, random = Math.random, retryAfter
 
 export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now, stateSecret, timeoutMs = DEFAULT_SNAPSHOT_TIMEOUT_MS }) {
   const requestStartedMs = now();
-  const response = await fetchImpl(`${gateway}/state/snapshot`, { signal: AbortSignal.timeout(timeoutMs) });
+  // S2-7: send HMAC-derived keeper bearer (never the raw state secret). Header
+  // is omitted only when stateSecret is unset (ZYRON_KEEPER_ALLOW_UNAUTHENTICATED);
+  // the gateway then answers 401, since /state/snapshot has no anonymous access.
+  const keeperBearer = stateSecret ? deriveSnapshotKeeperBearer(stateSecret) : undefined;
+  const response = await fetchImpl(`${gateway}/state/snapshot`, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: keeperBearer ? { authorization: `Bearer ${keeperBearer}` } : {}
+  });
   if (response.status !== 200) {
     await response.body?.cancel().catch(() => {});
     throw new SnapshotHttpError(response.status, retryAfterMs(response.headers));

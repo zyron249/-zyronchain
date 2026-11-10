@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Tests for the open-testnet snapshot keeper (.github/scripts/open-testnet-snapshot-keeper.mjs)
+import { deriveSnapshotKeeperBearer } from "../../l1/scripts/open-testnet/snapshot-bearer.mjs";
 // and static policy checks for its scheduled workflow.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -1669,6 +1670,24 @@ test("without the state secret the keeper refuses to run unless explicitly opted
   assert.throws(() => keeperSecretPolicy({ ZYRON_TESTNET_STATE_SECRET: "", ZYRON_KEEPER_ALLOW_UNAUTHENTICATED: "yes" }), /refusing to publish/);
   assert.deepEqual(keeperSecretPolicy({ ZYRON_TESTNET_STATE_SECRET: "s" }), { stateSecret: "s" });
   assert.match(keeperSecretPolicy({ ZYRON_KEEPER_ALLOW_UNAUTHENTICATED: "1" }).warning, /unauthenticated/);
+});
+
+test("fetchSnapshot sends HMAC-derived keeper Bearer, never the raw state secret", async () => {
+  const { fetchSnapshot, SnapshotHttpError } = keeper;
+  const secret = "test-fake-state-secret-for-keeper-bearer";
+  const derived = deriveSnapshotKeeperBearer(secret);
+  let authorization;
+  const fetchImpl = async (_url, init) => {
+    authorization = init?.headers?.authorization;
+    return new Response("busy", { status: 503 });
+  };
+  await assert.rejects(fetchSnapshot({ fetchImpl, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0, stateSecret: secret }), SnapshotHttpError);
+  assert.equal(authorization, `Bearer ${derived}`);
+  assert.notEqual(authorization, `Bearer ${secret}`);
+  // No secret → no Authorization header (the gateway answers 401).
+  authorization = "unset";
+  await assert.rejects(fetchSnapshot({ fetchImpl: async (_url, init) => { authorization = init?.headers?.authorization; return new Response("busy", { status: 503 }); }, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0 }), SnapshotHttpError);
+  assert.equal(authorization, undefined);
 });
 
 test("fetchSnapshotWithRetry retries 429/502/503 with jittered backoff and never other failures", async () => {

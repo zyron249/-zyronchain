@@ -41,7 +41,7 @@ There are no admin routes on the node RPC: key, governance and recovery operatio
 
 | | `open-testnet.mjs` (Render open testnet) | `public-testnet-rpc.mjs` (wallet testnet) |
 | --- | --- | --- |
-| Exposed | reads (`/status`, `/network`, `/genesis`, `/blocks` <= 20, `/block/:h`, `/balance`, `/nonce`, `/account`), read-only peer surface (`/peer/status`, `/peer/blocks` <= 100), `POST /tx` (transfers only), `POST /faucet`, sealed `/state/snapshot` | reads, `POST /tx` (transfers only), `POST /faucet` |
+| Exposed | reads (`/status`, `/network`, `/genesis`, `/blocks` <= 20, `/block/:h`, `/balance`, `/nonce`, `/account`), read-only peer surface (`/peer/status`, `/peer/blocks` <= 100), `POST /tx` (transfers only), `POST /faucet`, sealed `/state/snapshot` (keeper bearer only; anonymous gets 401) | reads, `POST /tx` (transfers only), `POST /faucet` |
 | Not exposed | validator consensus routes, `/metrics`, `/peers` | same |
 | Health | `GET /health` not rate limited (platform health check); validator fan-out cached 2 s, concurrent requests share one check (P1-02-L1) | `GET /health` not rate limited; node status cached 1 s, concurrent requests share one check |
 | Gateway to validator | loopback; validators run with `--rpc-rate-limit-exempt 127.0.0.1`, so public traffic and peer traffic do not share one node quota (P1-02-M3) | loopback; validator runs with `--rpc-rate-limit-exempt 127.0.0.1` |
