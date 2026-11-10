@@ -65,6 +65,8 @@ function baseFiles() {
   return {
     'README.md': 'fixture\n',
     'docs/fixed-supply-launch-plan.json': '{"total":50000000}\n',
+    'l1/scripts/verify-genesis-message.mjs': 'console.log("ok");\n',
+    'l1/scripts/verify-trading-activation.mjs': 'console.log("ok");\n',
     'l1/package.json': '{"name":"l1","scripts":{"preinstall":"node -e x","build":"tsc --outDir dist"}}\n',
     'l1/package-lock.json': REAL_LOCK,
     'l1/tsconfig.json': REAL_TSCONFIG,
@@ -125,9 +127,15 @@ function fixture(edit, { pin = 'keep', basePin = 'correct', after = null } = {})
   return { dir, head: git(dir, 'rev-parse', 'HEAD') };
 }
 
-function run(dir, head, labels, { eventHead = head, args = null, rawEvent = null, toolchain = TOOLCHAIN } = {}) {
+// Default event: a `labeled` event for the approval label when it is present
+// (the approval given on this head), otherwise `synchronize`.
+function run(dir, head, labels, { eventHead = head, args = null, rawEvent = null, toolchain = TOOLCHAIN, action = labels.includes(APPROVAL_LABEL) ? 'labeled' : 'synchronize', eventLabel = action === 'labeled' ? APPROVAL_LABEL : null, prHead = head } = {}) {
+  // What the workflow's fetch of refs/pull/N/head leaves behind.
+  // (A head that is not a real object leaves no ref, as a failed fetch would.)
+  spawnSync('git', ['update-ref', '-d', 'refs/remotes/pr/head'], { cwd: dir, env: GIT_ENV });
+  if (prHead !== null) spawnSync('git', ['update-ref', 'refs/remotes/pr/head', prHead], { cwd: dir, env: GIT_ENV });
   const eventPath = join(WORK, `event-${process.hrtime.bigint()}.json`);
-  writeFileSync(eventPath, rawEvent ?? JSON.stringify({ pull_request: { number: 7, head: { sha: eventHead }, labels: labels.map((name) => ({ name })) } }));
+  writeFileSync(eventPath, rawEvent ?? JSON.stringify({ action, ...(eventLabel !== null ? { label: { name: eventLabel } } : {}), pull_request: { number: 7, head: { sha: eventHead }, labels: labels.map((name) => ({ name })) } }));
   const argv = args ?? ['--merge-base', 'origin/main', '--head', head, '--event', eventPath, '--toolchain', toolchain, '--scratch', join(WORK, `scratch-${process.hrtime.bigint()}`)];
   const r = spawnSync(process.execPath, [CHECKER, ...argv], { cwd: dir, env: GIT_ENV, encoding: 'utf8' });
   rmSync(eventPath, { force: true });
@@ -199,7 +207,7 @@ await test("real repo: main's current pin is well-formed and passes the guard ag
   const head = git(repoRoot, 'rev-parse', 'HEAD');
   assert.match(git(repoRoot, 'show', `${head}:${PIN_PATH}`) + '\n', PIN_RE);
   const eventPath = join(WORK, 'real-event.json');
-  writeFileSync(eventPath, JSON.stringify({ pull_request: { head: { sha: head }, labels: [] } }));
+  writeFileSync(eventPath, JSON.stringify({ action: 'synchronize', pull_request: { head: { sha: head }, labels: [] } }));
   // --merge-base HEAD: does not depend on how the runner fetched main.
   expectPass(run(repoRoot, head, [], { args: ['--merge-base', head, '--head', head, '--event', eventPath, '--toolchain', TOOLCHAIN, '--scratch', join(WORK, 'real')] }));
 });
@@ -226,6 +234,85 @@ await test("no PR-lockfile fallback: a head whose lockfile toolchain differs fro
   expectFail(run(dir, head, L), /TypeScript toolchain in l1\/package-lock\.json differs from main's/);
 });
 
+// Label timing (Security finding 2 on #1216): the approval must come after
+// the last push. Simulated on the real event shapes GitHub sends.
+const TIMING = /must be applied after the last push to this head/;
+const sensitive = fixture((f) => { f['docs/fixed-supply-launch-plan.json'] = '{"total":2}\n'; });
+const moved = fixture(src2, { pin: 'correct' });
+await test('label timing: label then push fails (synchronize with the label still present)', () => {
+  expectFail(run(sensitive.dir, sensitive.head, L, { action: 'synchronize' }), TIMING, /remove "patron-approved-pin" and add it again/);
+  expectFail(run(moved.dir, moved.head, L, { action: 'synchronize' }), TIMING);
+});
+await test('label timing: push then label passes (labeled event for the approval label on this head)', () => {
+  expectPass(run(sensitive.dir, sensitive.head, L, { action: 'labeled', eventLabel: APPROVAL_LABEL }));
+  expectPass(run(moved.dir, moved.head, L, { action: 'labeled', eventLabel: APPROVAL_LABEL }));
+});
+await test('label timing: a labeled event from before a push fails (payload head is the old head)', () => {
+  // The labeled event carries the head at labelling time; checking it against
+  // a newer head is refused (fail closed on the SHA mismatch).
+  expectFail(run(moved.dir, moved.head, L, { action: 'labeled', eventLabel: APPROVAL_LABEL, eventHead: 'd'.repeat(40) }), /does not match/);
+});
+await test('label timing: a re-run of an older labeled run after a push fails (fetched PR head moved on)', () => {
+  // No fetched PR head at all: fail closed.
+  expectFail(run(moved.dir, moved.head, L, { prHead: null }), /not the head in the event/);
+  // pr/head points at a newer commit than the replayed payload's head.
+  const newer = git(moved.dir, 'commit-tree', '-p', moved.head, '-m', 'push after label', `${moved.head}^{tree}`);
+  expectFail(run(moved.dir, moved.head, L, { prHead: newer }), /not the head in the event/);
+});
+await test('label timing: unlabeled fails (approval label removed)', () => {
+  expectFail(run(moved.dir, moved.head, [], { action: 'unlabeled', eventLabel: APPROVAL_LABEL }), LABEL_MISSING);
+});
+await test('label timing: unlabeled of another label fails even with the approval label present', () => {
+  expectFail(run(moved.dir, moved.head, [APPROVAL_LABEL], { action: 'unlabeled', eventLabel: 'security' }), TIMING, /"unlabeled" event for label "security"/);
+});
+await test('label timing: a labeled event for a different label fails', () => {
+  expectFail(run(moved.dir, moved.head, [APPROVAL_LABEL, 'security'], { action: 'labeled', eventLabel: 'security' }), TIMING, /"labeled" event for label "security"/);
+  expectFail(run(moved.dir, moved.head, [APPROVAL_LABEL, 'Patron-Approved-Pin'], { action: 'labeled', eventLabel: 'Patron-Approved-Pin' }), TIMING);
+});
+await test('label timing: opened and reopened with the label already present fail', () => {
+  expectFail(run(moved.dir, moved.head, L, { action: 'opened' }), TIMING);
+  expectFail(run(moved.dir, moved.head, L, { action: 'reopened' }), TIMING);
+});
+await test('label timing: the label never rescues a failing pin, even on a fresh labeled event', () => {
+  const wrong = fixture(src2, { pin: WRONG });
+  expectFail(run(wrong.dir, wrong.head, L, { action: 'labeled', eventLabel: APPROVAL_LABEL }), MISMATCH);
+});
+await test('label timing: changes that need no label still pass on any event', () => {
+  for (const action of ['opened', 'synchronize', 'reopened']) expectPass(run(simple.dir, simple.head, [], { action }));
+  expectPass(run(simple.dir, simple.head, ['security'], { action: 'labeled', eventLabel: 'security' }));
+});
+await test('label timing: fail closed on a missing or unknown action, or a label event without label.name', () => {
+  expectFail(run(moved.dir, moved.head, L, { rawEvent: JSON.stringify({ pull_request: { head: { sha: moved.head }, labels: [{ name: APPROVAL_LABEL }] } }) }), /event action/);
+  expectFail(run(moved.dir, moved.head, L, { action: 'edited' }), /event action "edited"/);
+  expectFail(run(moved.dir, moved.head, L, { rawEvent: JSON.stringify({ action: 'labeled', pull_request: { head: { sha: moved.head }, labels: [{ name: APPROVAL_LABEL }] } }) }), /must carry label\.name/);
+});
+await test('label timing (pure): only labeled + approval label counts', () => {
+  const base = { basePin: `${'a'.repeat(64)}\n`, headPin: `${'b'.repeat(64)}\n`, changedPaths: ['l1/src/chain.ts', PIN_PATH], labels: L, rebuild: { hash: 'b'.repeat(64) } };
+  assert.equal(evaluatePinGuard({ ...base, event: { action: 'labeled', label: APPROVAL_LABEL, headIsCurrent: true } }).ok, true);
+  for (const event of [{ action: 'labeled', label: APPROVAL_LABEL }, { action: 'labeled', label: APPROVAL_LABEL, headIsCurrent: false }, null, { action: 'synchronize', label: null }, { action: 'opened', label: null }, { action: 'reopened', label: null }, { action: 'unlabeled', label: 'x' }, { action: 'labeled', label: 'x' }, { action: 'labeled', label: null }]) {
+    assert.equal(evaluatePinGuard({ ...base, event }).ok, false, JSON.stringify(event));
+  }
+});
+
+// Supply-sensitive paths added after Security's review (finding 3).
+for (const path of ['l1/scripts/verify-genesis-message.mjs', 'l1/scripts/verify-trading-activation.mjs']) {
+  await test(`supply script outside the tar (${path}) changed, pin unchanged: no label fails, fresh label passes`, () => {
+    const r = fixture((f) => { f[path] = 'throw new Error("weakened?");\n'; });
+    expectFail(run(r.dir, r.head, []), new RegExp(`supply, genesis or allocation files changed \\(${path.replace(/[./]/g, '\\$&')}\\)`));
+    expectPass(run(r.dir, r.head, L));
+    expectFail(run(r.dir, r.head, L, { action: 'synchronize' }), TIMING);
+  });
+}
+await test('supply file in the tar (l1/src/types.ts) changed with a correct pin: label required', () => {
+  const r = fixture((f) => { f['l1/src/types.ts'] = 'export const MAX_SUPPLY_ATOMS = 1n;\n'; }, { pin: 'correct' });
+  expectFail(run(r.dir, r.head, []), /l1\/src\/types\.ts/);
+  expectPass(run(r.dir, r.head, L));
+});
+await test('supply-sensitive file deleted (rename away) still needs the label', () => {
+  const g = fixture((f) => { delete f['l1/scripts/verify-genesis-message.mjs']; f['l1/scripts/verify-genesis-message-v2.mjs'] = 'x\n'; }, {});
+  expectFail(run(g.dir, g.head, []), /l1\/scripts\/verify-genesis-message\.mjs/);
+});
+
 // Pure parts.
 await test('evaluatePinGuard: the label never rescues a failing pin', () => {
   const good = `${'a'.repeat(64)}  zyron-supply-verifier.tar\n`;
@@ -234,7 +321,7 @@ await test('evaluatePinGuard: the label never rescues a failing pin', () => {
     const r = evaluatePinGuard({ basePin: good, headPin, changedPaths: ['l1/src/chain.ts', PIN_PATH], labels: L, rebuild });
     assert.equal(r.ok, false, `headPin ${JSON.stringify(headPin)} rebuild ${JSON.stringify(rebuild)} must fail even with the label`);
   }
-  assert.equal(evaluatePinGuard({ basePin: good, headPin: moved, changedPaths: ['l1/src/chain.ts', PIN_PATH], labels: L, rebuild: { hash: 'b'.repeat(64) } }).ok, true);
+  assert.equal(evaluatePinGuard({ basePin: good, headPin: moved, changedPaths: ['l1/src/chain.ts', PIN_PATH], labels: L, rebuild: { hash: 'b'.repeat(64) }, event: { action: 'labeled', label: APPROVAL_LABEL, headIsCurrent: true } }).ok, true);
 });
 await test('PIN_RE matches the regex in tools/supply-verifier/pin-hash.mjs', () => {
   const m = readFileSync(join(repoRoot, 'tools/supply-verifier/pin-hash.mjs'), 'utf8').match(/const PIN_RE = (\/.*\/);/);
@@ -246,7 +333,8 @@ await test('isHashInput covers every tar input and build step, and not the pin i
   for (const p of [PIN_PATH, 'README.md', 'docs/SUPPLY_VERIFIER.md', 'tools/supply-verifier/README.md', 'tools/supply-verifier/evidence/x.txt', 'tools/supply-verifier/test/build.test.mjs', '.github/workflows/l1.yml']) assert.ok(!isHashInput(p), p);
 });
 await test('supply-sensitive list is explicit, small, and every path exists in the repo', () => {
-  assert.deepEqual([...SUPPLY_SENSITIVE_PATHS], ['l1/src/tokenomics.ts', 'l1/src/supply-report.ts', 'l1/src/allocation-locks.ts', 'l1/src/miner-genesis.ts', 'l1/src/founder-vesting.ts', 'l1/genesis-message.json', 'docs/fixed-supply-launch-plan.json', 'l1/scripts/validate-fixed-supply-genesis.mjs']);
+  assert.deepEqual([...SUPPLY_SENSITIVE_PATHS], ['l1/src/tokenomics.ts', 'l1/src/supply-report.ts', 'l1/src/allocation-locks.ts', 'l1/src/miner-genesis.ts', 'l1/src/founder-vesting.ts', 'l1/genesis-message.json', 'docs/fixed-supply-launch-plan.json', 'l1/scripts/validate-fixed-supply-genesis.mjs',
+    'l1/scripts/verify-genesis-message.mjs', 'l1/scripts/verify-trading-activation.mjs', 'l1/src/types.ts', 'l1/src/public-distribution-release.ts']);
   for (const p of SUPPLY_SENSITIVE_PATHS) assert.ok(existsSync(join(repoRoot, p)), `${p} does not exist`);
   for (const p of ['tools/supply-verifier/src/verify.mjs', 'tools/supply-verifier/build.mjs', 'tools/supply-verifier/pin-hash.mjs']) assert.ok(isSupplySensitive(p), p);
   for (const p of ['l1/src/chain.ts', 'tools/supply-verifier/test/build.test.mjs', 'tools/supply-verifier/README.md', PIN_PATH]) assert.ok(!isSupplySensitive(p), p);

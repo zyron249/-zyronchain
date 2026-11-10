@@ -35,7 +35,11 @@
 //  3. If the pin changed, at least one file that feeds the hashed tar (or its
 //     build) changed too (a reproducible build of unchanged inputs cannot move).
 //  4. If the pin changed, or any SUPPLY_SENSITIVE_PATHS entry changed, the PR
-//     carries the label `patron-approved-pin`.
+//     carries the label `patron-approved-pin`, AND this run is for a
+//     `labeled` event for that label (label timing): the approval was given
+//     after the last push to the head being checked. Any other event
+//     (synchronize, opened, reopened, unlabeled, another label) fails and asks
+//     for the label to be re-applied on the current head.
 // The label is a second gate only and never a bypass: 1-3 fail with it.
 //
 // WHAT IT DOES NOT DO. It never executes PR content: no npm, no PR scripts,
@@ -46,9 +50,9 @@
 //
 // LIMITS. Running from main closes the gap where a PR edits the checker that
 // judges it. The label is still advisory: every bot acts through the same
-// zyron249 account, so any of them can add it, and the payload does not show
-// whether it was added after the last push. The guard only blocks a merge once
-// branch protection makes it required, which is the repository owner's call.
+// zyron249 account, so any of them can add it (label timing proves when, not
+// who). The guard only blocks a merge once branch protection makes it
+// required, which is the repository owner's call.
 //
 //   node .github/scripts/verify-supply-verifier-pin-guard.mjs \
 //     --merge-base origin/main --head <40-hex sha> --event "$GITHUB_EVENT_PATH" \
@@ -88,6 +92,12 @@ export const SUPPLY_SENSITIVE_PATHS = Object.freeze([
   'l1/genesis-message.json',
   'docs/fixed-supply-launch-plan.json',
   'l1/scripts/validate-fixed-supply-genesis.mjs',
+  // Added after Security's review of #1216 (finding 3). Not in the tar:
+  'l1/scripts/verify-genesis-message.mjs', // validates l1/genesis-message.json
+  'l1/scripts/verify-trading-activation.mjs', // validates the 50M total and the allocations in the launch plan
+  // In the tar (a change also moves the pin); listed for defense in depth:
+  'l1/src/types.ts', // MAX_SUPPLY_ATOMS
+  'l1/src/public-distribution-release.ts', // public distribution allocation release
 ]);
 // Directory prefix and top-level build scripts of the verifier.
 export const SUPPLY_SENSITIVE_PREFIXES = Object.freeze(['tools/supply-verifier/src/']);
@@ -113,8 +123,14 @@ export function isHashInput(path) {
  * regular file). changedPaths: paths that differ between merge base and head.
  * labels: label names from the event payload. rebuild: null when no rebuild
  * was needed (pin and hashed inputs unchanged), else { hash } or { error }.
+ * event: { action, label } from the payload (label: the name of the label
+ * that was added or removed, for labeled/unlabeled), headIsCurrent (true
+ * when refs/remotes/pr/head, fetched by this run, is the head being checked).
+ * When the label is required, it only counts on a `labeled` event for that
+ * exact label whose head is still the PR head, i.e. an approval given after
+ * the last push to the head being checked.
  */
-export function evaluatePinGuard({ basePin, headPin, changedPaths, labels, rebuild = null }) {
+export function evaluatePinGuard({ basePin, headPin, changedPaths, labels, rebuild = null, event = null }) {
   const errors = [];
   const notes = [];
   const inputsChanged = changedPaths.filter(isHashInput);
@@ -145,6 +161,21 @@ export function evaluatePinGuard({ basePin, headPin, changedPaths, labels, rebui
   }
   if (supplyChanged.length > 0 && !hasLabel) {
     errors.push(`supply, genesis or allocation files changed (${supplyChanged.join(', ')}), and the approval label "${APPROVAL_LABEL}" is missing.`);
+  }
+  // Label timing: the approval must come after the last push. Only a
+  // `labeled` event for the approval label itself, whose payload head is the
+  // head being checked, proves that. On synchronize/opened/reopened/unlabeled
+  // or a different label, the label may predate the current head, so fail and
+  // ask for it to be re-applied. A push after labelling turns this red until
+  // the label is removed and added again.
+  if ((pinChanged || supplyChanged.length > 0) && hasLabel) {
+    if (!(event?.action === 'labeled' && event?.label === APPROVAL_LABEL)) {
+      const what = event ? `a "${event.action}" event${event.label ? ` for label "${event.label}"` : ''}` : 'no event';
+      errors.push(`the approval label "${APPROVAL_LABEL}" must be applied after the last push to this head, but this run is for ${what}. A reviewer must remove "${APPROVAL_LABEL}" and add it again on the current head; that labeled event re-runs this check.`);
+    } else if (event.headIsCurrent !== true) {
+      // A re-run of an older labeled run replays its old payload and head.
+      errors.push(`the approval label "${APPROVAL_LABEL}" must be applied after the last push to this head, but the PR head fetched by this run is not the head in the event (a re-run of an older labeled event, or a push during the run). Remove "${APPROVAL_LABEL}" and add it again on the current head.`);
+    }
   }
   return { ok: errors.length === 0, pinChanged, inputsChanged, supplyChanged, errors, notes };
 }
@@ -280,11 +311,22 @@ export function main(argv) {
   const pr = event?.pull_request;
   if (!pr || !Array.isArray(pr.labels)) throw new Error('event payload has no pull_request.labels array');
   if (pr.head?.sha !== args.head) throw new Error(`event head SHA ${JSON.stringify(pr.head?.sha)} does not match --head ${args.head}`);
+  const ACTIONS = ['opened', 'synchronize', 'reopened', 'labeled', 'unlabeled'];
+  if (!ACTIONS.includes(event.action)) throw new Error(`event action ${JSON.stringify(event.action)} is not one of ${ACTIONS.join(', ')}`);
+  let eventLabel = null;
+  if (event.action === 'labeled' || event.action === 'unlabeled') {
+    if (typeof event.label?.name !== 'string') throw new Error(`a ${event.action} event payload must carry label.name`);
+    eventLabel = event.label.name;
+  }
   const labels = pr.labels.map((label) => {
     if (typeof label?.name !== 'string') throw new Error('event payload has a label without a string name');
     return label.name;
   });
   git(['cat-file', '-e', `${args.head}^{commit}`]);
+  // The workflow fetches refs/pull/N/head into refs/remotes/pr/head: the PR
+  // head at run time. Used only for label timing; absent means not current.
+  let fetchedHead = null;
+  try { fetchedHead = git(['rev-parse', '--verify', '--quiet', '--end-of-options', 'refs/remotes/pr/head^{commit}']).trim(); } catch { fetchedHead = null; }
   const mainCommit = git(['rev-parse', '--verify', '--end-of-options', `${args['merge-base']}^{commit}`]).trim();
   const base = git(['merge-base', mainCommit, args.head]).trim();
   if (!/^[0-9a-f]{40}$/.test(base)) throw new Error('no merge base between main and the PR head');
@@ -309,9 +351,9 @@ export function main(argv) {
       }
     }
   }
-  const result = evaluatePinGuard({ basePin, headPin, changedPaths, labels, rebuild });
+  const result = evaluatePinGuard({ basePin, headPin, changedPaths, labels, rebuild, event: { action: event.action, label: eventLabel, headIsCurrent: fetchedHead === args.head } });
   console.log(`merge base ${base}, head ${args.head}`);
-  console.log(`pin changed: ${result.pinChanged ? 'yes' : 'no'}; hashed inputs changed: ${result.inputsChanged.length}; supply-sensitive changed: ${result.supplyChanged.length}; rebuild: ${needsRebuild ? 'yes' : 'not needed'}; labels: ${JSON.stringify(labels)}`);
+  console.log(`pin changed: ${result.pinChanged ? 'yes' : 'no'}; hashed inputs changed: ${result.inputsChanged.length}; supply-sensitive changed: ${result.supplyChanged.length}; rebuild: ${needsRebuild ? 'yes' : 'not needed'}; event: ${event.action}${eventLabel !== null ? ` (${JSON.stringify(eventLabel)})` : ''}; labels: ${JSON.stringify(labels)}`);
   for (const line of summary) console.log(line);
   for (const note of result.notes) console.log(`note: ${note}`);
   for (const error of result.errors) console.log(`::error::${error}`);
