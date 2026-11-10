@@ -1684,7 +1684,7 @@ test("fetchSnapshot sends HMAC-derived keeper Bearer, never the raw state secret
   await assert.rejects(fetchSnapshot({ fetchImpl, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0, stateSecret: secret }), SnapshotHttpError);
   assert.equal(authorization, `Bearer ${derived}`);
   assert.notEqual(authorization, `Bearer ${secret}`);
-  // No secret → no Authorization header (public bucket).
+  // No secret → no Authorization header (the gateway answers 401).
   authorization = "unset";
   await assert.rejects(fetchSnapshot({ fetchImpl: async (_url, init) => { authorization = init?.headers?.authorization; return new Response("busy", { status: 503 }); }, gateway: "https://gw", expectedGenesis: GENESIS, now: () => T0 }), SnapshotHttpError);
   assert.equal(authorization, undefined);

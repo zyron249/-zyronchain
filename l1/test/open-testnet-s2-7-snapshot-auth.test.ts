@@ -1,11 +1,13 @@
-// S2-7: /state/snapshot auth-before-work + keeper/public quota isolation.
-// Stacked on test/s2-7-acceptance (draft #1202). Production path is
-// serveAuthorizedSnapshotRoute — the same helper runNetwork uses.
+// S2-7: /state/snapshot auth-before-work + keeper quota isolation.
+// Includes the acceptance tests from #1202 (test/s2-7-acceptance), now on
+// main. Production path is serveAuthorizedSnapshotRoute, the same helper
+// runNetwork uses.
 //
 // Design (no new Render env): keeper Bearer = HMAC-SHA256(
 //   ZYRON_TESTNET_STATE_SECRET, "zyron-open-testnet-snapshot-keeper-v1") as hex.
-// Raw secret is never accepted or sent. Unauthenticated → public bucket.
-// Invalid Bearer → 401 before any snapshots.fresh / takeRate / sealed read.
+// Raw secret is never accepted or sent. Unauthenticated, empty or invalid
+// Authorization → 401 before any snapshots.fresh / takeRate / sealed read
+// (S27-R2). There is no public bucket.
 //
 // No live endpoints, no network beyond 127.0.0.1, no real secrets.
 // Fake tokens below are deliberately obvious and never logged by these tests.
@@ -68,11 +70,11 @@ function limited(response: ServerResponse, rate: { retryAfterMs?: number }) {
 }
 
 function snapshotLimits(cap = 3) {
-  return {
-    snapshotKeeper: new api.WindowLimiter(cap, 3_600_000, 1),
-    snapshotPublic: new api.WindowLimiter(cap, 3_600_000, 1)
-  };
+  return { snapshotKeeper: new api.WindowLimiter(cap, 3_600_000, 1) };
 }
+// Requests counted against a key (the #1200 WindowLimiter keeps { start, count } per key).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const used = (limiter: any, key: string): number => limiter.hits.get(key)?.count ?? 0;
 
 /**
  * HTTP server that dispatches GET /state/snapshot through the same helper
@@ -146,27 +148,32 @@ test("S27 constant-time compare covers length (SHA-256 then timingSafeEqual)", (
   assert.equal(api.timingSafeBearerToken("Basic nope", derived), false);
   assert.equal(api.timingSafeBearerToken(undefined, derived), false);
   assert.equal(api.timingSafeBearerToken(`Bearer ${derived}`, ""), false);
-  assert.equal(api.snapshotClientRole(undefined, FAKE_STATE_SECRET), "public");
-  assert.equal(api.snapshotClientRole("", FAKE_STATE_SECRET), "public");
+  assert.equal(api.snapshotClientRole(undefined, FAKE_STATE_SECRET), "reject", "anonymous is rejected (S27-R2)");
+  assert.equal(api.snapshotClientRole("", FAKE_STATE_SECRET), "reject", "empty Authorization is rejected (S27-R2)");
+  assert.equal(api.snapshotClientRole(`Bearer ${derived}`, undefined), "reject", "no configured secret fails closed");
   assert.equal(api.snapshotClientRole(`Bearer ${FAKE_BAD_TOKEN}`, FAKE_STATE_SECRET), "reject");
 });
 
-// ---- S27-T1 (amended) ------------------------------------------------------
-// Amended vs original checklist row: unauthenticated requests use only the
-// public bucket and never touch the keeper limiter (Patron separate quotas;
-// no new env). T2 covers invalid-bearer 401 before cache work.
+// ---- S27-T1 ----------------------------------------------------------------
+// Original checklist intent (S2-7 / S27-R2): unauthenticated requests get 401
+// before any work: no cache read, no refresh, no sealed bytes, no limiter.
 
 test("S27-T1 snapshot-route-rejects-unauthenticated", async () => {
   const { snapshots, calls } = spySnapshots();
   const limits = snapshotLimits(3);
   const gw = await listenRunNetworkSnapshotPath(snapshots, { limits });
   try {
-    const response = await fetch(gw.url); // no Authorization → public
-    assert.equal(response.status, 200, `public unauthenticated is served; got ${response.status}`);
-    await response.arrayBuffer();
-    assert.equal(limits.snapshotKeeper.count("keeper"), 0, "keeper limiter must stay untouched");
-    assert.equal(limits.snapshotPublic.count("public"), 1, "public limiter counts the request");
-    assert.ok(calls.fresh >= 1, "public path may read fresh after role selection");
+    for (const headers of [{}, { authorization: "" }]) {
+      const response = await fetch(gw.url, { headers });
+      assert.equal(response.status, 401, `anonymous must be 401; got ${response.status}`);
+      assert.deepEqual(await response.json(), { error: "unauthorized" });
+    }
+    assert.equal(calls.fresh, 0, "fresh not called");
+    assert.equal(calls.current, 0, "current not called");
+    assert.equal(calls.refresh, 0, "refresh not called");
+    assert.equal(calls.sealedReads, 0, "no sealed buffer read");
+    assert.equal(limits.snapshotKeeper.hits.size, 0, "keeper limiter untouched");
+    assert.equal("snapshotPublic" in limits, false, "there is no public bucket");
   } finally {
     await gw.close();
   }
@@ -185,8 +192,7 @@ test("S27-T2 snapshot-route-rejects-before-cache-work", async () => {
     assert.equal(calls.current, 0, "current not called");
     assert.equal(calls.refresh, 0, "refresh not called");
     assert.equal(calls.sealedReads, 0, "no sealed buffer read");
-    assert.equal(limits.snapshotKeeper.count("keeper"), 0);
-    assert.equal(limits.snapshotPublic.count("public"), 0);
+    assert.equal(used(limits.snapshotKeeper, "keeper"), 0);
     await response.arrayBuffer();
   } finally {
     await gw.close();
@@ -200,17 +206,20 @@ test("S27-T3 snapshot-public-cannot-exhaust-keeper", async () => {
   const limits = snapshotLimits(3);
   const gw = await listenRunNetworkSnapshotPath(snapshots, { limits });
   try {
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 10; i += 1) {
       const pub = await fetch(gw.url);
-      assert.equal(pub.status, 200, `public seed ${i}`);
+      assert.equal(pub.status, 401, `anonymous ${i}`);
       await pub.arrayBuffer();
     }
-    const denied = await fetch(gw.url);
-    assert.equal(denied.status, 429, "public cap exhausted");
-    await denied.arrayBuffer();
-    const keeper = await fetch(gw.url, { headers: keeperAuth() });
-    assert.equal(keeper.status, 200, `keeper must still succeed after public cap; got ${keeper.status}`);
-    await keeper.arrayBuffer();
+    assert.equal(used(limits.snapshotKeeper, "keeper"), 0, "anonymous requests spend no keeper slot");
+    for (let i = 0; i < 3; i += 1) {
+      const keeper = await fetch(gw.url, { headers: keeperAuth() });
+      assert.equal(keeper.status, 200, `keeper ${i} must succeed after anonymous flood; got ${keeper.status}`);
+      await keeper.arrayBuffer();
+    }
+    const capped = await fetch(gw.url, { headers: keeperAuth() });
+    assert.equal(capped.status, 429, "keeper bucket still has its own cap");
+    await capped.arrayBuffer();
   } finally {
     await gw.close();
   }
@@ -230,6 +239,7 @@ test("S27-T4 snapshot-keeper-not-rate-limited-by-public", async () => {
 
     for (let i = 0; i < 5; i += 1) {
       const pub = await fetch(gw.url);
+      assert.equal(pub.status, 401);
       await pub.arrayBuffer();
     }
     const again = await fetch(gw.url, { headers: keeperAuth() });
@@ -262,13 +272,31 @@ test("S27-T5 snapshot-auth-concurrency-isolation", async () => {
 
     const publicStatuses = publicResults.map((r) => r.status);
     const keeperStatuses = keeperResults.map((r) => r.status);
-    const public429 = publicStatuses.filter((s) => s === 429).length;
-    assert.ok(public429 > 0, `expected some public 429s under shared public cap; got ${publicStatuses.join(",")}`);
+    assert.ok(publicStatuses.every((s) => s === 401), `every anonymous request is 401; got ${publicStatuses.join(",")}`);
     assert.ok(
       keeperStatuses.every((s) => s === 200),
-      `public 429s must not reduce keeper allows; keeper statuses=${keeperStatuses.join(",")}`
+      `concurrent anonymous requests must not reduce keeper allows; keeper statuses=${keeperStatuses.join(",")}`
     );
+    assert.equal(used(limits.snapshotKeeper, "keeper"), keeperM, "only keeper requests are counted");
   } finally {
     await gw.close();
   }
+});
+
+// ---- Merge guards (S27-R1) --------------------------------------------------
+
+test("S27 merge guard: one WindowLimiter, runNetwork wires the authorized route and only the keeper bucket", async () => {
+  const src = await readFile(join(l1Root, "scripts", "open-testnet.mjs"), "utf8");
+  assert.equal(src.match(/export class WindowLimiter\b/g)?.length, 1, "exactly one export class WindowLimiter");
+  assert.equal(src.match(/class WindowLimiter\b/g)?.length, 1, "no second (unexported) WindowLimiter");
+  assert.match(src, /if \(path === "\/state\/snapshot" && stateSecret\) \{[\s\S]{0,200}return serveAuthorizedSnapshotRoute\(/, "runNetwork routes /state/snapshot through serveAuthorizedSnapshotRoute");
+  assert.equal(/snapshotPublic/.test(src), false, "no public snapshot bucket");
+  assert.equal(/limits\.snapshot\.take/.test(src), false, "no shared snapshot bucket");
+  assert.match(src, /snapshotKeeper: new WindowLimiter\(30, 3_600_000, 1\)/);
+  // #1200 relay/limiter protections survive the merge.
+  assert.match(src, /const shortWindowOpts = \{ evictOnFull: true, prefixCap: RATE_LIMITER_PREFIX_CAP_DEFAULT \};/);
+  for (const name of ["read", "write", "relayIp"]) {
+    assert.match(src, new RegExp(`\\b${name}: new WindowLimiter\\([^\\n]*, 60_000, limiterMaxKeys, shortWindowOpts\\)`), `${name} keeps limiterMaxKeys + shortWindowOpts`);
+  }
+  assert.match(src, /rateLimiters: rateLimitersHealth\(limits\)/, "/health still reports rateLimiters");
 });

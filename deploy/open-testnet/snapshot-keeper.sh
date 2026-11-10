@@ -8,7 +8,13 @@
 # cannot replace state.enc. The pin is EXPECTED_GENESIS in
 # .github/workflows/open-testnet-snapshot-keeper.yml on PIN_REF (default main).
 # PIN_FILE overrides that read for a local check. ONCE=1 runs a single cycle.
-# Needs: curl, gh (authenticated with release write access to the repository).
+# S2-7: the gateway answers GET /state/snapshot only with the keeper bearer,
+# HMAC-SHA256(ZYRON_TESTNET_STATE_SECRET, "zyron-open-testnet-snapshot-keeper-v1")
+# as hex (l1/scripts/open-testnet/snapshot-bearer.mjs); anonymous requests get
+# 401. Set ZYRON_TESTNET_STATE_SECRET (same value as the gateway's) in the
+# environment. The bearer is derived by node from the environment and handed to
+# curl through a 0600 header file, so neither value is on a command line.
+# Needs: curl, node, gh (authenticated with release write access to the repository).
 set -euo pipefail
 GATEWAY="${GATEWAY:-https://zyron-open-testnet.onrender.com}"
 REPO="${REPO:-zyron249/-zyronchain}"
@@ -17,6 +23,13 @@ INTERVAL="${INTERVAL:-600}"
 PIN_REF="${PIN_REF:-main}"
 WORK="${WORK:-$HOME/.zyron-snapshot-keeper}"
 mkdir -p "$WORK"; chmod 700 "$WORK"
+
+if [[ -z "${ZYRON_TESTNET_STATE_SECRET:-}" ]]; then
+  echo "refusing to start: ZYRON_TESTNET_STATE_SECRET is not set; the gateway serves /state/snapshot only to the keeper bearer" >&2
+  exit 1
+fi
+auth_header="$WORK/auth-header"
+( umask 077; node -e 'const { createHmac } = require("node:crypto"); process.stdout.write(`Authorization: Bearer ${createHmac("sha256", process.env.ZYRON_TESTNET_STATE_SECRET).update("zyron-open-testnet-snapshot-keeper-v1", "utf8").digest("hex")}\n`);' >"$auth_header" )
 
 pinned_genesis() {
   local src pins n
@@ -43,7 +56,7 @@ while true; do
   headers="$WORK/h"; body="$WORK/state.enc.part"
   if ! pin=$(pinned_genesis); then
     echo "$(date -Is) refused: pinned genesis unavailable" >&2
-  elif curl -fsS --max-time 300 -D "$headers" -o "$body" "$GATEWAY/state/snapshot"; then
+  elif curl -fsS --max-time 300 -H "@$auth_header" -D "$headers" -o "$body" "$GATEWAY/state/snapshot"; then
     height=$(tr -d '\r' <"$headers" | awk -F': ' 'tolower($1)=="x-zyron-snapshot-height"{print $2}')
     genesis=$(tr -d '\r' <"$headers" | awk -F': ' 'tolower($1)=="x-zyron-genesis-hash"{print $2}')
     if [[ ! "$genesis" =~ ^[0-9a-f]{64}$ || "$genesis" != "$pin" ]]; then

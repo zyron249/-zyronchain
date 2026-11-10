@@ -5,21 +5,25 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { createHmac } from 'node:crypto';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const script = join(repo, 'deploy', 'open-testnet', 'snapshot-keeper.sh');
 const workflow = join(repo, '.github', 'workflows', 'open-testnet-snapshot-keeper.yml');
 const PIN = '11'.repeat(32);
 const OTHER = '22'.repeat(32);
+const FAKE_SECRET = 'test-fake-state-secret-legacy-keeper';
+const DERIVED = createHmac('sha256', FAKE_SECRET).update('zyron-open-testnet-snapshot-keeper-v1', 'utf8').digest('hex');
 
 function pinText(hash) {
   return `env:\n  EXPECTED_GENESIS: ${hash}\n`;
 }
 
-function run({ genesis, pin = pinText(PIN), pinFile = true, height = '12' }) {
+function run({ genesis, pin = pinText(PIN), pinFile = true, height = '12', secret = FAKE_SECRET }) {
   const dir = mkdtempSync(join(tmpdir(), 'zyron-keeper-'));
   const bin = join(dir, 'bin');
   const log = join(dir, 'gh.log');
+  const curlLog = join(dir, 'curl.log');
   mkdirSync(bin);
   writeFileSync(join(dir, 'pin.yml'), pin);
   writeFileSync(join(bin, 'gh'), `#!/bin/sh
@@ -37,6 +41,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -D) hdr=$2; shift 2 ;;
     -o) out=$2; shift 2 ;;
+    -H) case "$2" in @*) cat "\${2#@}" >> ${JSON.stringify(curlLog)} ;; *) printf '%s\\n' "$2" >> ${JSON.stringify(curlLog)} ;; esac; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -57,6 +62,7 @@ printf 'sealed' > "$out"
         REPO: 'example/repo',
         TAG: 'open-testnet-state',
         GATEWAY: 'https://gateway.test',
+        ZYRON_TESTNET_STATE_SECRET: secret,
         ...(pinFile ? { PIN_FILE: join(dir, 'pin.yml') } : {})
       }
     });
@@ -66,7 +72,8 @@ printf 'sealed' > "$out"
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', reject);
     child.on('close', (code) => {
-      resolve({ code, stdout, stderr, gh: readFileSync(log, 'utf8') });
+      const read = (path) => { try { return readFileSync(path, 'utf8'); } catch { return ''; } };
+      resolve({ code, stdout, stderr, gh: read(log), curl: read(curlLog) });
     });
   });
 }
@@ -111,4 +118,22 @@ test('the scheduled workflow has exactly one pin and the machine keeper accepts 
   assert.match(allowed.gh, /release upload/);
   assert.doesNotMatch(refused.gh, /release upload/);
   assert.match(refused.stderr, /refused: snapshot genesis 222222222222/);
+});
+
+test('the machine keeper sends the derived keeper bearer (S2-7), never the raw secret, and not on a command line', async () => {
+  const result = await run({ genesis: PIN });
+  assert.equal(result.code, 0);
+  assert.equal(result.curl, `Authorization: Bearer ${DERIVED}\n`);
+  assert.doesNotMatch(result.curl, new RegExp(FAKE_SECRET));
+  const source = readFileSync(script, 'utf8');
+  assert.match(source, /curl [^\n]*-H "@\$auth_header"/, 'curl reads the header from a file');
+  assert.doesNotMatch(source, /-H "Authorization/, 'the bearer is never a curl argument');
+});
+
+test('the machine keeper refuses to start without ZYRON_TESTNET_STATE_SECRET (anonymous /state/snapshot is 401)', async () => {
+  const result = await run({ genesis: PIN, secret: '' });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /refusing to start: ZYRON_TESTNET_STATE_SECRET is not set/);
+  assert.equal(result.curl, '');
+  assert.doesNotMatch(result.gh, /release upload/);
 });

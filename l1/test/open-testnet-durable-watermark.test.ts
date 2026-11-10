@@ -77,7 +77,7 @@ test("cold start from a snapshot behind the tip: followers never held a block th
   const json = async (base: string, p: string) => { const r = await fetch(base + p); return { status: r.status, body: await r.json() }; };
   // /state/snapshot serves a background-built cache (503 until the first build): wait for one at or past `min`.
   const snapshotAtLeast = async (base: string, min: number) => await until(`cached snapshot at height >= ${min}`, async () => {
-    const r = await fetch(`${base}/state/snapshot`);
+    const r = await fetch(`${base}/state/snapshot`, { headers: { authorization: `Bearer ${api.deriveSnapshotKeeperBearer(secret)}` } });
     const bytes = Buffer.from(await r.arrayBuffer());
     const height = Number(r.headers.get("x-zyron-snapshot-height"));
     return r.status === 200 && height >= min ? { bytes, height } : undefined;

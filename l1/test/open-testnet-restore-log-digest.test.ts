@@ -351,7 +351,7 @@ test("the gateway does not seal history corrupted on one validator's disk into t
     let sealed: Buffer | undefined;
     const deadline = Date.now() + 120_000;
     while (!sealed && Date.now() < deadline) {
-      const response = await fetch(`${base}/state/snapshot`).catch(() => undefined);
+      const response = await fetch(`${base}/state/snapshot`, { headers: { authorization: `Bearer ${api.deriveSnapshotKeeperBearer(SECRET)}` } }).catch(() => undefined);
       if (response?.status === 200) sealed = Buffer.from(await response.arrayBuffer());
       else await new Promise((done) => setTimeout(done, 1_000));
     }

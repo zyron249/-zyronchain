@@ -1411,27 +1411,28 @@ export function createSnapshotCache({
   };
 }
 
-// S2-7 role for GET /state/snapshot. Bearer must be the HMAC-derived keeper
-// token (never the raw ZYRON_TESTNET_STATE_SECRET). Unauthenticated → public
-// bucket; valid derived bearer → keeper; anything else → reject before cache work.
+// S2-7 role for GET /state/snapshot. The only accepted credential is the
+// HMAC-derived keeper bearer (never the raw ZYRON_TESTNET_STATE_SECRET).
+// Missing/empty Authorization, a wrong bearer, or no configured secret all
+// return "reject" (S27-R2: no anonymous access).
 export function snapshotClientRole(authorizationHeader, stateSecret) {
   if (!stateSecret) return "reject";
-  if (authorizationHeader === undefined || authorizationHeader === "") return "public";
+  if (typeof authorizationHeader !== "string" || authorizationHeader === "") return "reject";
   const expected = deriveSnapshotKeeperBearer(stateSecret);
   if (expected && timingSafeBearerToken(authorizationHeader, expected)) return "keeper";
   return "reject";
 }
 
-// Production /state/snapshot path used by runNetwork: auth/role BEFORE any
-// snapshots.fresh / takeRate / sealed read; separate keeper vs public limiters.
+// Production /state/snapshot path used by runNetwork: auth BEFORE any
+// snapshots.fresh / takeRate / sealed read. Rejected requests (anonymous
+// included) get 401 and touch no limiter or cache; only the keeper bucket
+// exists.
 export function serveAuthorizedSnapshotRoute(response, snapshots, {
   genesisHash, stateSecret, authorization, limits, limited = () => {},
   sendUnauthorized = (res) => writeJson(res, 401, { error: "unauthorized" })
 } = {}) {
-  const role = snapshotClientRole(authorization, stateSecret);
-  if (role === "reject") return sendUnauthorized(response);
-  const takeRate = () => (role === "keeper" ? limits.snapshotKeeper.take("keeper") : limits.snapshotPublic.take("public"));
-  return serveSnapshotRoute(response, snapshots, { genesisHash, takeRate, limited });
+  if (snapshotClientRole(authorization, stateSecret) !== "keeper") return sendUnauthorized(response);
+  return serveSnapshotRoute(response, snapshots, { genesisHash, takeRate: () => limits.snapshotKeeper.take("keeper"), limited });
 }
 
 // GET /state/snapshot from the cache. Never builds inline: a missing or stale
@@ -2072,9 +2073,9 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     faucetIp: new WindowLimiter(5, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
     faucetAddress: new WindowLimiter(1, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS),
     faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
-    // S2-7: separate buckets so public 429s cannot starve the keeper.
+    // S2-7: /state/snapshot is keeper-only (derived bearer); anonymous gets 401
+    // before any bucket, so the public cannot spend or starve this bucket.
     snapshotKeeper: new WindowLimiter(30, 3_600_000, 1),
-    snapshotPublic: new WindowLimiter(30, 3_600_000, 1),
     relayIp: new WindowLimiter(Number(process.env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000, limiterMaxKeys, shortWindowOpts)
   };
   // Verified history (R28-1059): from the restore replay when there was one,
@@ -2623,7 +2624,7 @@ async function smoke() {
     // Sealed snapshot -> restore into a fresh directory -> same chain resumes.
     // Served from the background cache: wait for a build at or past the tip.
     const snapshotResponse = await until("a cached snapshot at the rejoined tip", async () => {
-      const r = await fetch(`${base}/state/snapshot`);
+      const r = await fetch(`${base}/state/snapshot`, { headers: { authorization: `Bearer ${deriveSnapshotKeeperBearer(smokeSecret)}` } });
       if (r.status === 503) { assert.ok(Number(r.headers.get("retry-after")) > 0); return false; }
       assert.equal(r.status, 200);
       if (Number(r.headers.get("x-zyron-snapshot-height")) >= rejoined) return r;

@@ -825,7 +825,8 @@ export function retryDelayMs(attempt, { baseMs, random = Math.random, retryAfter
 export async function fetchSnapshot({ fetchImpl, gateway, expectedGenesis, now, stateSecret, timeoutMs = DEFAULT_SNAPSHOT_TIMEOUT_MS }) {
   const requestStartedMs = now();
   // S2-7: send HMAC-derived keeper bearer (never the raw state secret). Header
-  // is omitted only when stateSecret is unset (public bucket).
+  // is omitted only when stateSecret is unset (ZYRON_KEEPER_ALLOW_UNAUTHENTICATED);
+  // the gateway then answers 401, since /state/snapshot has no anonymous access.
   const keeperBearer = stateSecret ? deriveSnapshotKeeperBearer(stateSecret) : undefined;
   const response = await fetchImpl(`${gateway}/state/snapshot`, {
     signal: AbortSignal.timeout(timeoutMs),
