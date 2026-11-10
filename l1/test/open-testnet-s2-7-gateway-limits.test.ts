@@ -40,7 +40,7 @@ test("S27 gateway: #1200 read/relayIp limits, /48 cap, evict-on-full and /health
   let network: any;
   try {
     await api.initNetwork(join(root, "net"), "zyron-s27-gateway-testnet-1");
-    network = await api.runNetwork(join(root, "net"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("interrupted-restore"), log: false, stateSecret: secret });
+    network = await api.runNetwork(join(root, "net"), { gatewayPort: 0, basePort: await allocateValidatorBasePort("s2-7-gateway-limits"), log: false, stateSecret: secret });
     const base = `http://127.0.0.1:${network.port}`;
     const get = async (path: string, client: string, headers: Record<string, string> = {}) => {
       const r = await fetch(`${base}${path}`, { headers: { "x-forwarded-for": client, ...headers } });
