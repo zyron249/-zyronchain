@@ -134,7 +134,9 @@ test("R4-1: faucetPrefix wiring, prefix keys and deniedLimit counting", () => {
   assert.equal(api.faucetPrefixKey(bucket("::ffff:198.51.100.77")), "198.51.100.0/24", "IPv4-mapped IPv6 is bucketed as IPv4");
   assert.equal(api.faucetPrefixKey(bucket("2001:db8:99:1234::1")), "2001:0db8:0099::/48");
   assert.equal(api.faucetPrefixKey(bucket("2001:db8:99:ffff::1")), api.faucetPrefixKey(bucket("2001:db8:99::2")), "every /64 in a /48 shares one budget");
-  for (const key of ["unknown", "proxy:198.51.100.7", "999.1.1.1", "", undefined]) assert.equal(api.faucetPrefixKey(key), undefined, String(key));
+  // N1 (#1218 follow-up): keys with no IP identity share an other:<key> budget.
+  for (const key of ["unknown", "proxy:198.51.100.7", "999.1.1.1"]) assert.equal(api.faucetPrefixKey(key), `other:${key}`, key);
+  assert.equal(api.faucetPrefixKey(undefined), undefined);
   // peek(record) and take both count a limit refusal; peek predicts take.
   const l = new api.WindowLimiter(2, 1_000, 10, { countLimited: true });
   assert.equal(l.take("p", 0).allowed, true);
