@@ -22,9 +22,9 @@ const ports = (await import(pathToFileURL(join(l1Root, "scripts", "open-testnet-
 
 export type OpenTestnetPortWindow =
   | "restore-local-io-retry" | "durable-watermark" | "restore-log-digest" | "smoke"
-  | "early-listen" | "interrupted-restore" | "restore-not-found-retry";
+  | "early-listen" | "interrupted-restore" | "restore-not-found-retry" | "faucet-hardening";
 
-const typed: OpenTestnetPortWindow[] = ["restore-local-io-retry", "durable-watermark", "restore-log-digest", "smoke", "early-listen", "interrupted-restore", "restore-not-found-retry"];
+const typed: OpenTestnetPortWindow[] = ["restore-local-io-retry", "durable-watermark", "restore-log-digest", "smoke", "early-listen", "interrupted-restore", "restore-not-found-retry", "faucet-hardening"];
 if (JSON.stringify([...typed].sort()) !== JSON.stringify(Object.keys(ports.OPEN_TESTNET_PORT_WINDOWS).sort())) {
   throw new Error("OpenTestnetPortWindow is out of sync with scripts/open-testnet-ports.mjs");
 }

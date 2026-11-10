@@ -60,7 +60,7 @@ const { fixedSupplyPlanAtoms, FIXED_SUPPLY_LAUNCH_PROFILE } = await import(dist(
 const { defaultPublicDistributionRelease } = await import(dist("public-distribution-release.js"));
 const { MEMPOOL_MIN_FEE_ENV, nodeTransferFeeAtoms, parseMempoolMinFeeAtoms } = await import(dist("mempool.js"));
 const { STRICT_MIN_VALIDATORS } = await import(dist("network-class.js"));
-const { gatewayClientIdentity } = await import(dist("rpc-client-identity.js"));
+const { gatewayClientIdentity, isLoopbackAddress } = await import(dist("rpc-client-identity.js"));
 const { ConsensusRelay, RELAY_MAX_BODY_BYTES, RELAY_MAX_CONSENSUS_REQUEST_BYTES, parseRelayPeers, relayReplyHeaders, relayVotingPeer } = await import("./open-testnet/consensus-relay.mjs");
 
 export const DEFAULT_CHAIN_ID = "zyron-open-testnet-1";
@@ -615,9 +615,13 @@ export const FAUCET_UNAVAILABLE_MESSAGE = "faucet temporarily unavailable, retry
 //   taken is refunded; a node rejection, 5xx or timeout is never refunded.
 export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody, send, log = (line) => console.error(line), durabilityView = async () => ({}), reservedReceivers = [] }) {
   const reserved = new Set([...FAUCET_RESERVED_RECEIVERS, ...reservedReceivers]);
-  return async (request, response, ip) => {
+  // `address` (optional) is the client IP literal the gateway's identity was
+  // derived from; it is only used for embedded-IPv4 prefix keys (N2).
+  return async (request, response, ip, address) => {
     const cors = withoutCors(faucetCorsHeaders(request.headers.origin, origins));
     const reply = (code, body, extra = {}) => writeJson(response, code, body, { ...cors, ...extra });
+    // N4: a 413 or 408 leaves body bytes unread; close instead of draining them.
+    const refuse = (code, body) => { closeAfterReply(request, response); return reply(code, body, { connection: "close" }); };
     const limited = (r) => reply(429, { error: "rate limit exceeded" }, { "retry-after": String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))) });
     // Origin and Content-Type are checked BEFORE any quota is taken, so a
     // cross-site no-cors POST (text/plain, form, Origin: null) cannot burn a
@@ -637,7 +641,7 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
       }
       const exhausted = peekLimit(limits.faucetIp, ip);
       if (!exhausted.allowed) return limited(exhausted);
-      const prefix = limits.faucetPrefix ? faucetPrefixKey(ip) : undefined;
+      const prefix = limits.faucetPrefix ? faucetPrefixKey(ip, address) : undefined;
       if (prefix !== undefined) {
         const spent = peekLimit(limits.faucetPrefix, prefix);
         if (!spent.allowed) return limited(spent);
@@ -645,14 +649,15 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
       // R4-4: a valid body is about 60 bytes. A declared length above the cap
       // is refused before anything is read; readJsonBody enforces the same cap
       // on the bytes actually received, before JSON.parse.
-      if (Number(request.headers["content-length"] ?? 0) > FAUCET_MAX_BODY_BYTES) return reply(413, { error: "request body too large" });
-      const body = await readJsonBody(request, FAUCET_MAX_BODY_BYTES);
-      const address = body && typeof body === "object" ? body.address : undefined;
-      if (typeof address !== "string" || !ADDRESS_PATTERN.test(address) || address === faucetAddress) return reply(400, { error: "body must be {\"address\":\"ZYN...\"}" });
+      // F1: the whole body must arrive within FAUCET_BODY_DEADLINE_MS (408).
+      if (Number(request.headers["content-length"] ?? 0) > FAUCET_MAX_BODY_BYTES) return refuse(413, { error: "request body too large" });
+      const body = await readJsonBody(request, FAUCET_MAX_BODY_BYTES, { deadlineMs: FAUCET_BODY_DEADLINE_MS });
+      const receiver = body && typeof body === "object" ? body.address : undefined;
+      if (typeof receiver !== "string" || !ADDRESS_PATTERN.test(receiver) || receiver === faucetAddress) return reply(400, { error: "body must be {\"address\":\"ZYN...\"}" });
       // Protocol-reserved receivers are rejected by every node; refuse them
       // here, before any quota is taken or a transfer is built (#1213-6, R3-2).
-      if (reserved.has(address)) return reply(400, { error: "address is protocol-reserved" });
-      const spends = [[limits.faucetIp, ip], [limits.faucetAddress, address]];
+      if (reserved.has(receiver)) return reply(400, { error: "address is protocol-reserved" });
+      const spends = [[limits.faucetIp, ip], [limits.faucetAddress, receiver]];
       if (prefix !== undefined) spends.push([limits.faucetPrefix, prefix]);
       spends.push([limits.faucetGlobal, "global"]);
       for (const [limiter, key] of spends) {
@@ -670,14 +675,15 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
       // Refund only when the send failed before POST /tx left the gateway
       // (fee floor, chain status or nonce lookup): a node rejection, a 5xx or
       // a timeout may already be a drip, and is attacker-triggerable (#1213-6).
-      try { result = await send(address); } catch (error) { if (error?.preSubmit === true) refundAll(taken); throw error; }
+      try { result = await send(receiver); } catch (error) { if (error?.preSubmit === true) refundAll(taken); throw error; }
       // The transfer is already queued: a failed durability lookup must not turn it into an error.
       const durability = await durabilityView().catch(() => ({}));
       return reply(200, { ...result, network: "testnet", valueBearing: false, note: "TESTNET — tokens have no value. Arrives in a coming block (about 30 seconds).", ...durability });
     } catch (error) {
       // Only the gateway's own fixed request-validation messages are passed through.
       const code = error?.statusCode;
-      const own = (code === 400 || code === 413 || code === 415) && FAUCET_REQUEST_ERRORS.has(error?.message);
+      const own = (code === 400 || code === 408 || code === 413 || code === 415) && FAUCET_REQUEST_ERRORS.has(error?.message);
+      if (own && (code === 408 || code === 413)) return refuse(code, { error: error.message });
       // A pre-submit failure arrives wrapped (markFaucetPreSubmit, R3-3).
       const feeFloor = error instanceof FaucetFeeFloorError ? error : error?.preSubmit === true && error.cause instanceof FaucetFeeFloorError ? error.cause : undefined;
       if (feeFloor) {
@@ -742,19 +748,44 @@ export function createFaucetSend({ chainStatus, anyNode, chainId, faucet, nonceT
 // 60 bytes; 512 leaves room for whitespace and bounds the JSON parse cost
 // (an 8 KB deeply nested array cost ~19x a normal request).
 export const FAUCET_MAX_BODY_BYTES = 512;
+// F1: deadline for the whole /faucet body, counted from when the route starts
+// reading it. A valid body is one small packet, so 2 s only cuts clients that
+// drip bytes to hold one of the gateway's 64 request slots (Node's own
+// requestTimeout of 10 s still applies to every request, /tx included).
+export const FAUCET_BODY_DEADLINE_MS = 2_000;
 // Reads a JSON request body of at most maxBytes: a larger declared or received
-// body is refused with 413 before JSON.parse. Used by the gateway for /tx
-// (MAX_BODY_BYTES) and /faucet (FAUCET_MAX_BODY_BYTES).
-export async function readJsonRequestBody(request, maxBytes = MAX_BODY_BYTES) {
+// body is refused with 413 before JSON.parse. With deadlineMs, a body that has
+// not fully arrived by then is refused with 408. Used by the gateway for /tx
+// (MAX_BODY_BYTES, no deadline) and /faucet (FAUCET_MAX_BODY_BYTES, 2 s).
+// After a refusal the stream is paused and left unread; the caller replies
+// with Connection: close (closeAfterReply).
+export async function readJsonRequestBody(request, maxBytes = MAX_BODY_BYTES, { deadlineMs = 0 } = {}) {
   if (!String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) throw Object.assign(new Error("content-type must be application/json"), { statusCode: 415 });
   if (Number(request.headers["content-length"] ?? 0) > maxBytes) throw Object.assign(new Error("request body too large"), { statusCode: 413 });
-  let size = 0; const chunks = [];
-  for await (const chunk of request) { size += chunk.length; if (size > maxBytes) throw Object.assign(new Error("request body too large"), { statusCode: 413 }); chunks.push(chunk); }
-  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); }
+  const parse = (chunks) => { try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); } };
+  if (request.readableEnded) return parse([]);
+  return await new Promise((resolve, reject) => {
+    let size = 0; const chunks = []; let timer;
+    const cleanup = () => { clearTimeout(timer); request.off("data", onData); request.off("end", onEnd); request.off("error", onError); request.off("close", onClose); };
+    const fail = (error) => { cleanup(); request.pause(); reject(error); };
+    function onData(chunk) { size += chunk.length; if (size > maxBytes) return fail(Object.assign(new Error("request body too large"), { statusCode: 413 })); chunks.push(chunk); }
+    function onEnd() { cleanup(); try { resolve(parse(chunks)); } catch (error) { reject(error); } }
+    function onError(error) { fail(error); }
+    function onClose() { if (!request.complete) fail(Object.assign(new Error("request aborted"), { statusCode: 400 })); }
+    request.on("data", onData); request.on("end", onEnd); request.on("error", onError); request.on("close", onClose);
+    if (deadlineMs > 0) { timer = setTimeout(() => fail(Object.assign(new Error("request body timeout"), { statusCode: 408 })), deadlineMs); timer.unref?.(); }
+  });
+}
+// N4: after a reply that leaves request bytes unread (413, 408), the reply
+// carries Connection: close and, once it is flushed, the request (and its
+// socket) is destroyed, so the gateway stops reading instead of draining an
+// arbitrarily long body to keep the connection alive.
+export function closeAfterReply(request, response) {
+  response.once("finish", () => { if (!request.destroyed) request.destroy(); });
 }
 function peekLimit(limiter, key) { return typeof limiter.peek === "function" ? limiter.peek(key, Date.now(), { record: true }) : { allowed: true }; }
 function refundAll(taken) { for (const [limiter, receipt] of taken) if (receipt && typeof limiter.refund === "function") limiter.refund(receipt); }
-const FAUCET_REQUEST_ERRORS = new Set(["content-type must be application/json", "request body too large", "invalid JSON"]);
+const FAUCET_REQUEST_ERRORS = new Set(["content-type must be application/json", "request body too large", "request body timeout", "invalid JSON"]);
 const SECURITY = { "x-content-type-options": "nosniff", "x-zyron-network": "testnet-no-value", "referrer-policy": "no-referrer" };
 function writeJson(response, code, body, extra = {}) {
   const payload = `${JSON.stringify(body, null, 2)}\n`;
@@ -768,9 +799,13 @@ function writeJson(response, code, body, extra = {}) {
 // One HTTP server for the whole process lifetime. `run` binds it before the
 // snapshot restore so a platform port scan sees the port immediately; the
 // boot handler answers until runNetwork installs the full RPC handler.
+export const GATEWAY_CONNECTIONS_CHECKING_INTERVAL_MS = 1_000;
 export function createGatewayServer(handler) {
   let current = handler;
-  const server = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, keepAliveTimeout: 5_000, maxHeaderSize: 16_384 }, (request, response) => current(request, response));
+  // F1: Node enforces headersTimeout / requestTimeout only on each
+  // connectionsCheckingInterval tick (default 30 s), which let a dripped body
+  // hold a slot for up to ~40 s. A 1 s tick enforces them within ~1 s.
+  const server = createServer({ headersTimeout: 5_000, requestTimeout: 10_000, keepAliveTimeout: 5_000, maxHeaderSize: 16_384, connectionsCheckingInterval: GATEWAY_CONNECTIONS_CHECKING_INTERVAL_MS }, (request, response) => current(request, response));
   server.maxConnections = 256;
   server.setHandler = (next) => { current = next; };
   return server;
@@ -1276,16 +1311,67 @@ export const FAUCET_ATTEMPTS_PER_MINUTE = 10;
 // IPv6 /48 or IPv4 /24 per day (Red Team's prototype). Tradeoff: a shared /48
 // or /24 (campus, CGNAT) gets at most 20 drips a day between all its users.
 export const FAUCET_PREFIX_DRIPS_PER_DAY = 20;
-// faucetPrefix key for a rate-limit key: "<hhhh:hhhh:hhhh>::/48" for an IPv6
-// /64 bucket, "a.b.c.0/24" for an IPv4 address; undefined for anything else
-// ("unknown", "proxy:..."), which then has no prefix budget.
-export function faucetPrefixKey(ipKey) {
+// faucetPrefix key for a rate-limit key (and, optionally, the IP literal it
+// was bucketed from):
+// - an IPv6 address with an embedded IPv4 address maps to that IPv4 /24 (N2):
+//   6to4 2002::/16 (from the key itself), and, from the literal, NAT64
+//   64:ff9b::/96 and IPv4-compatible ::a.b.c.d (IPv4-mapped ::ffff:a.b.c.d is
+//   already bucketed as IPv4 by clientAddressBucket);
+// - another IPv6 /64 bucket maps to "<hhhh:hhhh:hhhh>::/48";
+// - an IPv4 address maps to "a.b.c.0/24";
+// - any other key ("unknown", "proxy:<peer>") maps to "other:<key>", so those
+//   shared buckets share one 20-a-day budget instead of skipping it (N1).
+export function faucetPrefixKey(ipKey, address) {
   if (typeof ipKey !== "string") return undefined;
+  const sixToFour = /^ipv6:2002:([0-9a-f]{4}):([0-9a-f]{4}):[0-9a-f]{4}\/64$/.exec(ipKey);
+  if (sixToFour) return ipv4Slash24FromHextets(sixToFour[1], sixToFour[2]);
+  const embedded = embeddedIpv4Slash24(ipKey, address);
+  if (embedded) return embedded;
   const v6 = rateLimiterIpv6Prefix48(ipKey);
   if (v6) return v6;
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ipKey);
-  if (!v4 || v4.slice(1).some((octet) => Number(octet) > 255)) return undefined;
-  return `${Number(v4[1])}.${Number(v4[2])}.${Number(v4[3])}.0/24`;
+  if (v4 && !v4.slice(1).some((octet) => Number(octet) > 255)) return `${Number(v4[1])}.${Number(v4[2])}.${Number(v4[3])}.0/24`;
+  return `other:${ipKey}`;
+}
+function ipv4Slash24FromHextets(high, low) {
+  const h = Number.parseInt(high, 16); const l = Number.parseInt(low, 16);
+  return `${h >> 8}.${h & 0xff}.${l >> 8}.0/24`;
+}
+// The eight hextets of an IPv6 literal (canonicalised by the WHATWG URL
+// parser, as clientAddressBucket does), or undefined.
+function ipv6Hextets(literal) {
+  if (typeof literal !== "string" || literal.length > 64) return undefined;
+  const normalized = literal.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  if (!normalized.includes(":") || normalized.includes("%")) return undefined;
+  let canonical;
+  try { canonical = new URL(`http://[${normalized}]/`).hostname.slice(1, -1); } catch { return undefined; }
+  const [left, right] = canonical.split("::");
+  const l = left ? left.split(":") : [];
+  const r = right ? right.split(":") : [];
+  const fill = canonical.includes("::") ? 8 - l.length - r.length : 0;
+  const parts = [...l, ...Array(fill).fill("0"), ...r];
+  return parts.length === 8 ? parts.map((p) => p.padStart(4, "0")) : undefined;
+}
+// NAT64 / IPv4-compatible literals, used only when the literal is the one the
+// rate-limit key was derived from (same /64), so it cannot pick another prefix.
+function embeddedIpv4Slash24(ipKey, address) {
+  const h = ipv6Hextets(address);
+  if (!h || ipKey !== `ipv6:${h.slice(0, 4).join(":")}/64`) return undefined;
+  const nat64 = h[0] === "0064" && h[1] === "ff9b" && h.slice(2, 6).every((x) => x === "0000");
+  const compatible = h.slice(0, 6).every((x) => x === "0000") && h[6] !== "0000";
+  return nat64 || compatible ? ipv4Slash24FromHextets(h[6], h[7]) : undefined;
+}
+// The client IP literal gatewayClientIdentity bucketed: the same selection
+// (CF-Connecting-IP when trusted; from a loopback peer the rightmost
+// X-Forwarded-For entry; otherwise the socket peer). Only used for prefix keys
+// (N2), and only when it matches the identity's /64 (embeddedIpv4Slash24).
+export function gatewayClientAddressLiteral(remoteAddress, headers, { trustCloudflareConnectingIp }) {
+  if (typeof remoteAddress !== "string") return undefined;
+  if (trustCloudflareConnectingIp) { const edge = headers["cf-connecting-ip"]; return typeof edge === "string" ? edge : undefined; }
+  if (!isLoopbackAddress(remoteAddress)) return remoteAddress;
+  const forwarded = headers["x-forwarded-for"];
+  if (typeof forwarded !== "string" || forwarded.length === 0) return undefined;
+  return forwarded.split(",").at(-1);
 }
 // The gateway's rate-limit tables (exported so tests can check the wiring).
 export function createGatewayLimits({ env = process.env, log = (line) => console.warn(line) } = {}) {
@@ -2583,6 +2669,10 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
   function clientIp(request) {
     return gatewayClientIdentity(request.socket.remoteAddress, request.headers, { trustCloudflareConnectingIp });
   }
+  // The IP literal clientIp() bucketed (faucet prefix keys only, N2).
+  function clientAddress(request) {
+    return gatewayClientAddressLiteral(request.socket.remoteAddress, request.headers, { trustCloudflareConnectingIp });
+  }
 
   const faucetSend = createFaucetSend({ chainStatus, anyNode, chainId, faucet });
 
@@ -2615,7 +2705,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     response.end(explorerHtml);
   }
   const limited = (response, r) => sendJson(response, 429, { error: "rate limit exceeded" }, { "retry-after": String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))) });
-  function readJsonBody(request, maxBytes = MAX_BODY_BYTES) { return readJsonRequestBody(request, maxBytes); }
+  function readJsonBody(request, maxBytes = MAX_BODY_BYTES, options = {}) { return readJsonRequestBody(request, maxBytes, options); }
   const faucetRoute = createFaucetRoute({ origins: faucetOrigins, limits, faucetAddress: faucet.address, readJsonBody, send: faucetSend, durabilityView: async () => submitDurableView((await chainStatus()).height), reservedReceivers: faucetGenesisReservedReceivers(genesis) });
   // Explorer view of a block: summary fields only.
   function summarizeBlock(block) {
@@ -2748,7 +2838,7 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           if (submitted.status < 200 || submitted.status > 299) return sendJson(response, 400, { error: String(submitted.body?.error ?? "rejected").slice(0, 300) });
           return sendJson(response, 200, submitAcceptedView(submitted.body, submitDurableView((await chainStatus()).height)));
         }
-        if (path === "/faucet") return await faucetRoute(request, response, ip);
+        if (path === "/faucet") return await faucetRoute(request, response, ip, clientAddress(request));
         if (relay && path.startsWith("/relay/v1/")) {
           const relayRate = limits.relayIp.take(ip);
           if (!relayRate.allowed) return limited(response, relayRate);
@@ -2762,6 +2852,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     } catch (error) {
       const code = error?.statusCode ?? 500;
       if (code === 500) console.error(`gateway error: ${error instanceof Error ? error.message : String(error)}`);
+      // N4: a body refused part-way (413 on /tx or /relay) is not drained.
+      if (code === 413 || code === 408) { closeAfterReply(request, response); return sendJson(response, code, { error: error.message }, { connection: "close" }); }
       return sendJson(response, code, { error: code === 500 ? "internal error" : error.message });
     }
   };

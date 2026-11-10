@@ -24,7 +24,9 @@ export const OPEN_TESTNET_PORT_WINDOWS = Object.freeze({
   "smoke": Object.freeze([19_300, 21_350]),
   "early-listen": Object.freeze([21_500, 23_500]),
   "interrupted-restore": Object.freeze([24_000, 26_500]),
-  "restore-not-found-retry": Object.freeze([26_500, 29_000])
+  "restore-not-found-retry": Object.freeze([26_500, 29_000]),
+  // test/open-testnet-faucet-hardening.test.ts (runNetwork /faucet and /tx limits).
+  "faucet-hardening": Object.freeze([29_000, 31_000])
 });
 
 // Single fixed ports (default listen ports of long-running helpers). Each sits
