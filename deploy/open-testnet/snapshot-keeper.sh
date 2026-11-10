@@ -12,8 +12,16 @@
 # HMAC-SHA256(ZYRON_TESTNET_STATE_SECRET, "zyron-open-testnet-snapshot-keeper-v1")
 # as hex (l1/scripts/open-testnet/snapshot-bearer.mjs); anonymous requests get
 # 401. Set ZYRON_TESTNET_STATE_SECRET (same value as the gateway's) in the
-# environment. The bearer is derived by node from the environment and handed to
-# curl through a 0600 header file, so neither value is on a command line.
+# environment. Secret handling:
+# - the secret and the bearer are never echoed or logged, and never on a command
+#   line: node derives the bearer from its own environment and writes it to a
+#   0600 header file that curl reads with -H @file;
+# - that file lives in a private temp directory (mktemp -d, 0700), removed by a
+#   trap on EXIT, INT and TERM;
+# - the secret is unset from this shell once the bearer exists, so curl and gh
+#   never inherit it;
+# - the script fails closed (exit 1, a message without the value) when the
+#   secret is missing or empty, node is missing, or the bearer cannot be made.
 # Needs: curl, node, gh (authenticated with release write access to the repository).
 set -euo pipefail
 GATEWAY="${GATEWAY:-https://zyron-open-testnet.onrender.com}"
@@ -25,11 +33,31 @@ WORK="${WORK:-$HOME/.zyron-snapshot-keeper}"
 mkdir -p "$WORK"; chmod 700 "$WORK"
 
 if [[ -z "${ZYRON_TESTNET_STATE_SECRET:-}" ]]; then
-  echo "refusing to start: ZYRON_TESTNET_STATE_SECRET is not set; the gateway serves /state/snapshot only to the keeper bearer" >&2
+  echo "refusing to start: ZYRON_TESTNET_STATE_SECRET is missing or empty; the gateway serves /state/snapshot only to the keeper bearer" >&2
   exit 1
 fi
-auth_header="$WORK/auth-header"
-( umask 077; node -e 'const { createHmac } = require("node:crypto"); process.stdout.write(`Authorization: Bearer ${createHmac("sha256", process.env.ZYRON_TESTNET_STATE_SECRET).update("zyron-open-testnet-snapshot-keeper-v1", "utf8").digest("hex")}\n`);' >"$auth_header" )
+if ! command -v node >/dev/null 2>&1; then
+  echo "refusing to start: node is not installed; it is needed to derive the keeper bearer" >&2
+  exit 1
+fi
+secret_dir=""
+sleep_pid=""
+cleanup() {
+  if [[ -n "$sleep_pid" ]]; then kill "$sleep_pid" 2>/dev/null || true; fi
+  if [[ -n "$secret_dir" ]]; then rm -rf -- "$secret_dir"; fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+secret_dir=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/zyron-keeper-auth.XXXXXXXX")
+chmod 700 "$secret_dir"
+auth_header="$secret_dir/auth-header"
+if ! ( umask 077; node -e 'const { createHmac } = require("node:crypto"); const s = process.env.ZYRON_TESTNET_STATE_SECRET; if (!s) process.exit(2); process.stdout.write(`Authorization: Bearer ${createHmac("sha256", s).update("zyron-open-testnet-snapshot-keeper-v1", "utf8").digest("hex")}\n`);' >"$auth_header" 2>/dev/null ) || [[ ! -s "$auth_header" ]]; then
+  echo "refusing to start: could not derive the keeper bearer" >&2
+  exit 1
+fi
+chmod 600 "$auth_header"
+unset ZYRON_TESTNET_STATE_SECRET
 
 pinned_genesis() {
   local src pins n
@@ -69,5 +97,8 @@ while true; do
     else echo "$(date -Is) skipped (height=$height last=$last)"; fi
   else echo "$(date -Is) gateway unreachable" >&2; fi
   if [[ "${ONCE:-}" == "1" ]]; then break; fi
-  sleep "$INTERVAL"
+  # Background sleep + wait so INT/TERM run the trap at once, not after the sleep.
+  sleep "$INTERVAL" & sleep_pid=$!
+  wait "$sleep_pid" || true
+  sleep_pid=""
 done

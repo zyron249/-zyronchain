@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, chmodSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync, mkdirSync, readdirSync, symlinkSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -19,12 +19,15 @@ function pinText(hash) {
   return `env:\n  EXPECTED_GENESIS: ${hash}\n`;
 }
 
-function run({ genesis, pin = pinText(PIN), pinFile = true, height = '12', secret = FAKE_SECRET }) {
+function run({ genesis = PIN, pin = pinText(PIN), pinFile = true, height = '12', secret = FAKE_SECRET, once = true, withoutNode = false, onStdout = null }) {
   const dir = mkdtempSync(join(tmpdir(), 'zyron-keeper-'));
   const bin = join(dir, 'bin');
   const log = join(dir, 'gh.log');
   const curlLog = join(dir, 'curl.log');
+  const authLog = join(dir, 'auth.log');
+  const tmp = join(dir, 'tmp');
   mkdirSync(bin);
+  mkdirSync(tmp);
   writeFileSync(join(dir, 'pin.yml'), pin);
   writeFileSync(join(bin, 'gh'), `#!/bin/sh
 printf '%s\\n' "$*" >> ${JSON.stringify(log)}
@@ -41,7 +44,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -D) hdr=$2; shift 2 ;;
     -o) out=$2; shift 2 ;;
-    -H) case "$2" in @*) cat "\${2#@}" >> ${JSON.stringify(curlLog)} ;; *) printf '%s\\n' "$2" >> ${JSON.stringify(curlLog)} ;; esac; shift 2 ;;
+    -H) case "$2" in @*) cat "\${2#@}" >> ${JSON.stringify(curlLog)}; printf '%s %s %s\\n' "\${2#@}" "$(stat -c %a "\${2#@}")" "$(stat -c %a "$(dirname "\${2#@}")")" >> ${JSON.stringify(authLog)} ;; *) printf '%s\\n' "$2" >> ${JSON.stringify(curlLog)} ;; esac; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -50,12 +53,23 @@ printf 'sealed' > "$out"
 `);
   chmodSync(join(bin, 'gh'), 0o755);
   chmodSync(join(bin, 'curl'), 0o755);
+  let path = `${bin}:${process.env.PATH}`;
+  if (withoutNode) {
+    // Only the tools the script needs, and no node.
+    const tools = join(dir, 'tools');
+    mkdirSync(tools);
+    for (const name of ['mkdir', 'chmod', 'mktemp', 'rm', 'cat', 'tr', 'awk', 'date', 'cp', 'sleep', 'grep', 'sed', 'sh', 'stat', 'dirname']) {
+      const target = ['/usr/bin', '/bin'].map((d) => join(d, name)).find((p) => existsSync(p));
+      if (target) symlinkSync(target, join(tools, name));
+    }
+    path = `${bin}:${tools}`;
+  }
   return new Promise((resolve, reject) => {
-    const child = spawn('bash', [script], {
-      env: {
+    const env = {
         ...process.env,
-        PATH: `${bin}:${process.env.PATH}`,
-        ONCE: '1',
+        PATH: path,
+        TMPDIR: tmp,
+        ...(once ? { ONCE: '1' } : { ONCE: '' }),
         INTERVAL: '3600',
         WORK: join(dir, 'work'),
         HOME: dir,
@@ -64,16 +78,20 @@ printf 'sealed' > "$out"
         GATEWAY: 'https://gateway.test',
         ZYRON_TESTNET_STATE_SECRET: secret,
         ...(pinFile ? { PIN_FILE: join(dir, 'pin.yml') } : {})
-      }
-    });
+    };
+    if (secret === null) delete env.ZYRON_TESTNET_STATE_SECRET;
+    const child = spawn('/bin/bash', [script], { env });
     let stderr = '';
     let stdout = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stdout.on('data', (chunk) => { stdout += chunk; if (onStdout) onStdout(stdout, child); });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', reject);
-    child.on('close', (code) => {
-      const read = (path) => { try { return readFileSync(path, 'utf8'); } catch { return ''; } };
-      resolve({ code, stdout, stderr, gh: read(log), curl: read(curlLog) });
+    child.on('close', (code, signal) => {
+      const read = (p) => { try { return readFileSync(p, 'utf8'); } catch { return ''; } };
+      // The secret value must never reach stdout or stderr, in any run.
+      if (FAKE_SECRET && (stdout.includes(FAKE_SECRET) || stderr.includes(FAKE_SECRET))) reject(new Error('the state secret appeared in the keeper output'));
+      if (stdout.includes(DERIVED) || stderr.includes(DERIVED)) reject(new Error('the keeper bearer appeared in the keeper output'));
+      resolve({ code, signal, stdout, stderr, gh: read(log), curl: read(curlLog), auth: read(authLog), tmpLeft: readdirSync(tmp) });
     });
   });
 }
@@ -130,10 +148,63 @@ test('the machine keeper sends the derived keeper bearer (S2-7), never the raw s
   assert.doesNotMatch(source, /-H "Authorization/, 'the bearer is never a curl argument');
 });
 
-test('the machine keeper refuses to start without ZYRON_TESTNET_STATE_SECRET (anonymous /state/snapshot is 401)', async () => {
-  const result = await run({ genesis: PIN, secret: '' });
+test('the machine keeper fails closed without ZYRON_TESTNET_STATE_SECRET (missing or empty), with a message that names no value', async () => {
+  for (const secret of [null, '']) { // null = unset
+    const result = await run({ secret });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /refusing to start: ZYRON_TESTNET_STATE_SECRET is missing or empty/);
+    assert.equal(result.curl, '');
+    assert.doesNotMatch(result.gh, /release upload/);
+    assert.deepEqual(result.tmpLeft, [], 'no temp directory is left behind');
+  }
+});
+
+test('the machine keeper fails closed when node is missing, without printing the secret', async () => {
+  const result = await run({ withoutNode: true });
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /refusing to start: ZYRON_TESTNET_STATE_SECRET is not set/);
+  assert.match(result.stderr, /refusing to start: node is not installed/);
   assert.equal(result.curl, '');
   assert.doesNotMatch(result.gh, /release upload/);
+  assert.deepEqual(result.tmpLeft, []);
+});
+
+test('the bearer file is 0600 in a private mktemp -d directory and is removed on a normal exit', async () => {
+  const result = await run({});
+  assert.equal(result.code, 0);
+  const [file, mode, dirMode] = result.auth.trim().split(' ');
+  assert.match(file, /\/tmp\/zyron-keeper-auth\.[^/]+\/auth-header$/, 'inside a mktemp -d directory under TMPDIR');
+  assert.equal(mode, '600');
+  assert.equal(dirMode, '700');
+  assert.equal(existsSync(file), false, 'the bearer file is gone after exit');
+  assert.deepEqual(result.tmpLeft, [], 'the temp directory is gone after exit');
+});
+
+for (const [sig, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
+  test(`the bearer file is removed when the keeper is stopped by ${sig} while it waits`, async () => {
+    let sent = false;
+    const result = await run({ once: false, onStdout: (out, child) => { if (!sent && /published height/.test(out)) { sent = true; setTimeout(() => child.kill(sig), 200); } } });
+    assert.equal(sent, true, 'the keeper published one cycle before the signal');
+    assert.equal(result.code, code, `exit ${code} after ${sig} (got code=${result.code} signal=${result.signal})`);
+    const [file] = result.auth.trim().split(' ');
+    assert.equal(existsSync(file), false);
+    assert.deepEqual(result.tmpLeft, [], 'the temp directory is gone after the signal');
+  });
+}
+
+test('the machine keeper script never echoes, logs or passes the secret or bearer on a command line', () => {
+  const source = readFileSync(script, 'utf8');
+  const code = source.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+  assert.doesNotMatch(code, /set -x|xtrace/);
+  assert.doesNotMatch(code, /(echo|printf)[^\n]*\$\{?ZYRON_TESTNET_STATE_SECRET/, 'the secret is never printed');
+  assert.doesNotMatch(code, /(echo|printf)[^\n]*\$\{?auth_header\}?"?\s*$/m);
+  assert.doesNotMatch(code, /curl [^\n]*-H "Authorization/, 'the bearer is never a curl argument');
+  assert.doesNotMatch(code, /--hmac|-hmac|openssl/, 'no HMAC tool that takes the key as an argument');
+  // node reads the secret from process.env; it is never interpolated into argv.
+  assert.match(code, /process\.env\.ZYRON_TESTNET_STATE_SECRET/);
+  assert.doesNotMatch(code, /node[^\n]*"\$\{?ZYRON_TESTNET_STATE_SECRET/);
+  assert.match(code, /trap cleanup EXIT/);
+  assert.match(code, /trap 'exit 130' INT/);
+  assert.match(code, /trap 'exit 143' TERM/);
+  assert.match(code, /mktemp -d/);
+  assert.match(code, /unset ZYRON_TESTNET_STATE_SECRET/);
 });
