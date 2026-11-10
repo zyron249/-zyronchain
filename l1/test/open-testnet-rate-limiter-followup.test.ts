@@ -91,7 +91,7 @@ test("R2-3: /health counters split /48-cap events from table-full events and rep
   assert.equal(limits.faucetAddress.prefixCap, 0);
   for (const name of ["read", "write", "relayIp"]) assert.equal(limits[name].prefixCap, 256, name);
   const body = api.rateLimitersHealth(limits);
-  assert.deepEqual(Object.keys(body).sort(), ["faucetAddress", "faucetAttempt", "faucetGlobal", "faucetIp", "read", "relayIp", "snapshot", "write"]);
+  assert.deepEqual(Object.keys(body).sort(), ["faucetAddress", "faucetAttempt", "faucetGlobal", "faucetIp", "faucetPrefix", "read", "relayIp", "snapshot", "write"]);
 });
 
 test("R2-3: one fill log line at 80% and one at full, re-armed only below 70%; the line carries counts, never keys", () => {

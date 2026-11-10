@@ -12,8 +12,10 @@
 // Persistence for hosts without a disk: with ZYRON_TESTNET_STATE_SECRET set, the
 // gateway serves GET /state/snapshot, an AES-256-GCM sealed bundle (genesis,
 // TEST keys, finalized blocks). `run --init-if-missing --restore-url <url>`
-// restores a missing directory from such a bundle (re-validating every block)
-// before falling back to a fresh genesis.
+// restores a missing directory from such a bundle (re-validating every block).
+// A failed restore exits 1; a fresh genesis is created only when no snapshot is
+// published (a 404 after the 160 s retry) and ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1
+// is set (deploy/open-testnet/render.yaml leaves it unset).
 //
 // Startup on hosts with a port scan (Render): the gateway binds --port / $PORT
 // before anything slow happens. While the snapshot is downloaded, decrypted and
@@ -525,15 +527,17 @@ export function createStartupProgress({ stallMs = STARTUP_STALL_MS, maxMs = STAR
 export const BOOT_STALL_MS = 5 * 60_000;
 // A host outage (5xx, a network error, a body cut off mid-transfer) is retried
 // for 172 s in total before the restore counts as failed, about as long as a
-// missing asset: a failed restore creates a fresh TEST genesis, so a short
-// outage of the asset host must not reset the network.
+// missing asset: a failed restore stops start-up (exit 1, never a fresh
+// genesis), so a short outage of the asset host must not stop the network.
 export const SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000, 30_000, 45_000, 60_000];
 // A keeper replaces the published snapshot release asset in more than one step
 // (`gh release upload --clobber` deletes the old asset and then uploads the new
 // one; the scheduled keeper renames), so a cold start can see 404 while a
 // snapshot does exist. A 404 is retried on its own schedule (160 s in total,
 // enough for the upload of a snapshot far larger than today's) before it is
-// taken to mean that nothing is published (which creates a fresh TEST genesis).
+// taken to mean that nothing is published. Start-up then exits 1, unless
+// ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1 is set, the only case that creates a
+// fresh TEST genesis (deploy/open-testnet/render.yaml leaves it unset).
 // Each wait is far below the 5-minute start-up stall limit.
 export const SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS = [3_000, 7_000, 15_000, 30_000, 45_000, 60_000];
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600" };
@@ -595,16 +599,22 @@ function withoutCors(extra) { return { "access-control-allow-origin": undefined,
 export const FAUCET_UNAVAILABLE_MESSAGE = "faucet temporarily unavailable, retry later";
 // POST /faucet. Errors are generic; the details (node error text included) go
 // to the server log only. Quota order (#1210 R3-3, #1213-4/-5):
-// - faucetAttempt (60s, per IP, counts every attempt) and a read-only
-//   faucetIp.peek run before the body is read, so an IP cannot hold many slow
-//   bodies open and an exhausted IP is refused without reading its body;
-// - after the body validates, faucetIp, faucetAddress and faucetGlobal are all
-//   peeked, then all taken with no await in between, so a refusal by any of
-//   them spends none of the others;
-// - protocol-reserved receivers get a 400 before any of them is taken;
-// - if the send fails BEFORE POST /tx is sent (error.preSubmit), all three
-//   are refunded; a node rejection, 5xx or timeout is never refunded.
-export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody, send, log = (line) => console.error(line), durabilityView = async () => ({}) }) {
+// - faucetAttempt (60s, per IP, counts every attempt) and read-only peeks of
+//   faucetIp and faucetPrefix run before the body is read, so an IP cannot
+//   hold many slow bodies open and an exhausted IP or prefix is refused
+//   without reading its body;
+// - a body above FAUCET_MAX_BODY_BYTES gets 413 before it is parsed (R4-4);
+// - after the body validates, faucetIp, faucetAddress, faucetPrefix (the
+//   client's IPv6 /48 or IPv4 /24, R4-1) and faucetGlobal are all peeked, then
+//   all taken with no await in between, so a refusal by any of them spends
+//   none of the others;
+// - protocol-reserved receivers (FAUCET_RESERVED_RECEIVERS plus the
+//   reservedReceivers passed in, e.g. the genesis activity pool) get a 400
+//   before any of them is taken;
+// - if the send fails BEFORE POST /tx is sent (error.preSubmit), every table
+//   taken is refunded; a node rejection, 5xx or timeout is never refunded.
+export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody, send, log = (line) => console.error(line), durabilityView = async () => ({}), reservedReceivers = [] }) {
+  const reserved = new Set([...FAUCET_RESERVED_RECEIVERS, ...reservedReceivers]);
   return async (request, response, ip) => {
     const cors = withoutCors(faucetCorsHeaders(request.headers.origin, origins));
     const reply = (code, body, extra = {}) => writeJson(response, code, body, { ...cors, ...extra });
@@ -627,13 +637,24 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
       }
       const exhausted = peekLimit(limits.faucetIp, ip);
       if (!exhausted.allowed) return limited(exhausted);
-      const body = await readJsonBody(request);
+      const prefix = limits.faucetPrefix ? faucetPrefixKey(ip) : undefined;
+      if (prefix !== undefined) {
+        const spent = peekLimit(limits.faucetPrefix, prefix);
+        if (!spent.allowed) return limited(spent);
+      }
+      // R4-4: a valid body is about 60 bytes. A declared length above the cap
+      // is refused before anything is read; readJsonBody enforces the same cap
+      // on the bytes actually received, before JSON.parse.
+      if (Number(request.headers["content-length"] ?? 0) > FAUCET_MAX_BODY_BYTES) return reply(413, { error: "request body too large" });
+      const body = await readJsonBody(request, FAUCET_MAX_BODY_BYTES);
       const address = body && typeof body === "object" ? body.address : undefined;
       if (typeof address !== "string" || !ADDRESS_PATTERN.test(address) || address === faucetAddress) return reply(400, { error: "body must be {\"address\":\"ZYN...\"}" });
       // Protocol-reserved receivers are rejected by every node; refuse them
-      // here, before any quota is taken or a transfer is built (#1213-6).
-      if (FAUCET_RESERVED_RECEIVERS.has(address)) return reply(400, { error: "address is protocol-reserved" });
-      const spends = [[limits.faucetIp, ip], [limits.faucetAddress, address], [limits.faucetGlobal, "global"]];
+      // here, before any quota is taken or a transfer is built (#1213-6, R3-2).
+      if (reserved.has(address)) return reply(400, { error: "address is protocol-reserved" });
+      const spends = [[limits.faucetIp, ip], [limits.faucetAddress, address]];
+      if (prefix !== undefined) spends.push([limits.faucetPrefix, prefix]);
+      spends.push([limits.faucetGlobal, "global"]);
       for (const [limiter, key] of spends) {
         const rate = peekLimit(limiter, key);
         if (!rate.allowed) return limited(rate);
@@ -657,9 +678,11 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
       // Only the gateway's own fixed request-validation messages are passed through.
       const code = error?.statusCode;
       const own = (code === 400 || code === 413 || code === 415) && FAUCET_REQUEST_ERRORS.has(error?.message);
-      if (error instanceof FaucetFeeFloorError) {
-        log(`faucet error (fee floor): ${error.message}`);
-        return reply(503, { error: error.message, code: error.code });
+      // A pre-submit failure arrives wrapped (markFaucetPreSubmit, R3-3).
+      const feeFloor = error instanceof FaucetFeeFloorError ? error : error?.preSubmit === true && error.cause instanceof FaucetFeeFloorError ? error.cause : undefined;
+      if (feeFloor) {
+        log(`faucet error (fee floor): ${feeFloor.message}`);
+        return reply(503, { error: feeFloor.message, code: feeFloor.code });
       }
       if (!own) log(`faucet error: ${error instanceof Error ? error.message : String(error)}`);
       return reply(own ? code : 503, { error: own ? error.message : FAUCET_UNAVAILABLE_MESSAGE });
@@ -670,10 +693,19 @@ export function createFaucetRoute({ origins, limits, faucetAddress, readJsonBody
 // mining.ts, ACTIVITY_WINDOW_TIME_ADDRESS / ACTIVITY_WINDOW_AMOUNT_ADDRESS in
 // activity.ts; a test keeps them in sync). They pass ADDRESS_PATTERN.
 export const FAUCET_RESERVED_RECEIVERS = new Set([`ZYN${"0".repeat(40)}`, `ZYN${"0".repeat(39)}1`, `ZYN${"0".repeat(39)}2`]);
-// Marks a faucet send failure that happened before POST /tx was sent, so the
-// route may refund the quotas it took.
+// The genesis ecosystem activity pool is outflow-only: every node rejects a
+// transfer to it (l1/src/state.ts assertNoActivityPoolInflow). It is a
+// per-network address, so the gateway passes it to createFaucetRoute (R3-2).
+export function faucetGenesisReservedReceivers(genesis) {
+  const pool = genesis?.activityPool;
+  return typeof pool === "string" && ADDRESS_PATTERN.test(pool) ? [pool] : [];
+}
+// Wraps a faucet send failure that happened before POST /tx was sent, so the
+// route may refund the quotas it took. A NEW error carries the flag and the
+// original is its cause, so a caught error object that is later rethrown after
+// POST /tx can never carry preSubmit (R3-3).
 export function markFaucetPreSubmit(error) {
-  const marked = error instanceof Error ? error : new Error(String(error));
+  const marked = new Error(error instanceof Error ? error.message : String(error), { cause: error });
   marked.preSubmit = true;
   return marked;
 }
@@ -705,6 +737,20 @@ export function createFaucetSend({ chainStatus, anyNode, chainId, faucet, nonceT
     queue = run.catch(() => undefined);
     return run;
   };
+}
+// R4-4: /faucet body cap. A valid body ({"address":"ZYN" + 40 hex}) is about
+// 60 bytes; 512 leaves room for whitespace and bounds the JSON parse cost
+// (an 8 KB deeply nested array cost ~19x a normal request).
+export const FAUCET_MAX_BODY_BYTES = 512;
+// Reads a JSON request body of at most maxBytes: a larger declared or received
+// body is refused with 413 before JSON.parse. Used by the gateway for /tx
+// (MAX_BODY_BYTES) and /faucet (FAUCET_MAX_BODY_BYTES).
+export async function readJsonRequestBody(request, maxBytes = MAX_BODY_BYTES) {
+  if (!String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) throw Object.assign(new Error("content-type must be application/json"), { statusCode: 415 });
+  if (Number(request.headers["content-length"] ?? 0) > maxBytes) throw Object.assign(new Error("request body too large"), { statusCode: 413 });
+  let size = 0; const chunks = [];
+  for await (const chunk of request) { size += chunk.length; if (size > maxBytes) throw Object.assign(new Error("request body too large"), { statusCode: 413 }); chunks.push(chunk); }
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); }
 }
 function peekLimit(limiter, key) { return typeof limiter.peek === "function" ? limiter.peek(key, Date.now(), { record: true }) : { allowed: true }; }
 function refundAll(taken) { for (const [limiter, receipt] of taken) if (receipt && typeof limiter.refund === "function") limiter.refund(receipt); }
@@ -788,8 +834,9 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 // Downloads the published snapshot for a cold start. Transient download
 // failures and a transient 404 are retried; the caller treats a final 404 as
-// "nothing published" (fresh TEST genesis) and anything other than 200 as a
-// failed restore. Returns the last response (a 200 body is left unread). With
+// "nothing published" (exit 1, or a fresh TEST genesis only with
+// ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1) and anything other than 200 as a
+// failed restore (exit 1). Returns the last response (a 200 body is left unread). With
 // `readBody`, a 200 body is read inside the retry loop (a body cut off
 // mid-transfer is downloaded again) and `{ status: 200, bytes }` is returned.
 export async function downloadSnapshot(url, { fetchImpl = fetch, sleepImpl = sleep, onAttempt = () => {}, log = console.error, notFoundDelaysMs = SNAPSHOT_NOT_FOUND_RETRY_DELAYS_MS, failureDelaysMs = SNAPSHOT_DOWNLOAD_RETRY_DELAYS_MS, readBody = false } = {}) {
@@ -965,9 +1012,11 @@ export function historyResumeSkipMessage(error, redact = {}) {
   if (error?.missing) return "snapshot: history file absent (ephemeral disk); rebuilding from genesis";
   return `snapshot: history file not resumed (${sanitizeSnapshotError(error, redact)}); rebuilding from genesis`;
 }
-// Per-limiter key bound for the gateway's rate-limit windows (read, write,
-// faucet, relay). Each tracked key is a Map entry plus an { start, count }
-// object; on the 512MB Render free plan the old 50k bound let a wide key
+// Per-limiter key bound for the gateway's 60-second rate-limit tables (read,
+// write, relayIp, faucetAttempt). It does NOT tune the faucet day windows
+// (faucetIp, faucetAddress, faucetPrefix use DAY_WINDOW_LIMITER_MAX_KEYS) or
+// the single-key faucetGlobal / snapshot tables. Each tracked key is a Map
+// entry plus an { start, count } object; on the 512MB Render free plan the old 50k bound let a wide key
 // spray hold tens of MB of anon heap. 10k is far above live traffic (a few
 // hundred distinct IPs per window) and stays tunable via
 // ZYRON_RPC_LIMITER_MAX_KEYS (1000..1000000).
@@ -1026,18 +1075,21 @@ const FILL_LEVELS = ["ok", "high", "full"];
 //   ends. The budget table holds at most maxKeys /48s (oldest dropped first).
 // - fillAlert=true: track 80%/full crossings, call onFill once per crossing,
 //   and report fill / fillAlerts in stats().
+// - countLimited=true (faucetPrefix, R4-1): per-key limit refusals are counted
+//   in deniedLimit and reported in stats().
 // - peek(key) answers exactly what take(key) would answer at the same moment,
 //   without changing anything; refund(receipt) undoes one allowed take, but
-//   only within the window entry that take spent.
+//   only within the window entry that take spent, and only once (R3-1).
 export class WindowLimiter {
-  constructor(limit, windowMs, maxKeys = RATE_LIMITER_MAX_KEYS_DEFAULT, { evictOnFull = false, prefixCap = 0, fillAlert = false, onFill } = {}) {
-    Object.assign(this, { limit, windowMs, maxKeys, evictOnFull, prefixCap, fillAlert, hits: new Map(), perPrefix: new Map(), prefixBudget: new Map(), deniedFull: 0, deniedPrefix: 0, evicted: 0, evictedPrefix: 0, fillAlerts: 0 });
+  constructor(limit, windowMs, maxKeys = RATE_LIMITER_MAX_KEYS_DEFAULT, { evictOnFull = false, prefixCap = 0, fillAlert = false, onFill, countLimited = false } = {}) {
+    Object.assign(this, { limit, windowMs, maxKeys, evictOnFull, prefixCap, fillAlert, countLimited, hits: new Map(), perPrefix: new Map(), prefixBudget: new Map(), deniedFull: 0, deniedPrefix: 0, deniedLimit: 0, evicted: 0, evictedPrefix: 0, fillAlerts: 0 });
     this.prefixBudgetLimit = evictOnFull && prefixCap > 0 ? prefixCap * limit : 0;
     this.#onFill = typeof onFill === "function" ? onFill : undefined;
     this.#highAt = Math.max(1, Math.ceil(maxKeys * RATE_LIMITER_FILL_ALERT_RATIO));
     this.#rearmBelow = Math.floor(maxKeys * RATE_LIMITER_FILL_REARM_RATIO);
   }
   #onFill;
+  #refunded = new WeakSet();
   #highAt;
   #rearmBelow;
   #alertLevel = 0;
@@ -1086,7 +1138,11 @@ export class WindowLimiter {
       }
     }
     const entry = this.hits.get(key);
-    if (this.#live(entry, now)) return entry.count >= this.limit ? { allowed: false, retryAfterMs: entry.start + this.windowMs - now } : { allowed: true };
+    if (this.#live(entry, now)) {
+      if (entry.count < this.limit) return { allowed: true };
+      if (record && this.countLimited) this.deniedLimit += 1;
+      return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
+    }
     if (this.limit < 1) return { allowed: false, retryAfterMs: this.windowMs };
     if (this.evictOnFull) return { allowed: true };
     const group = p ? this.perPrefix.get(p) : undefined;
@@ -1158,7 +1214,10 @@ export class WindowLimiter {
       }
     }
     this.#trackFill();
-    if (entry.count >= this.limit) return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
+    if (entry.count >= this.limit) {
+      if (this.countLimited) this.deniedLimit += 1;
+      return { allowed: false, retryAfterMs: entry.start + this.windowMs - now };
+    }
     entry.count += 1;
     let spentBudget;
     if (p && this.prefixBudgetLimit > 0) {
@@ -1174,12 +1233,14 @@ export class WindowLimiter {
   // Undo one allowed take, given its receipt from takeWithReceipt(). Only the
   // very entry (and /48 budget) that take spent is credited: if that window
   // has since expired or been replaced, nothing is refunded. A key left with
-  // no uses is dropped so its slot frees too.
+  // no uses is dropped so its slot frees too. A receipt refunds at most once:
+  // a reused receipt returns false and changes nothing (R3-1).
   refund(receipt, now = Date.now()) {
-    if (!receipt || typeof receipt !== "object") return false;
+    if (!receipt || typeof receipt !== "object" || this.#refunded.has(receipt)) return false;
     const { key, entry, budget } = receipt;
     const current = this.hits.get(key);
     if (current === undefined || current !== entry || !this.#live(current, now) || current.count < 1) return false;
+    this.#refunded.add(receipt);
     current.count -= 1;
     if (current.count === 0) this.#drop(key);
     const p = this.#prefixOf(key);
@@ -1187,7 +1248,7 @@ export class WindowLimiter {
     return true;
   }
   stats() {
-    const base = { size: this.hits.size, maxKeys: this.maxKeys, deniedFull: this.deniedFull, deniedPrefix: this.deniedPrefix, evicted: this.evicted, evictedPrefix: this.evictedPrefix };
+    const base = { size: this.hits.size, maxKeys: this.maxKeys, deniedFull: this.deniedFull, deniedPrefix: this.deniedPrefix, evicted: this.evicted, evictedPrefix: this.evictedPrefix, ...(this.countLimited ? { deniedLimit: this.deniedLimit } : {}) };
     return this.fillAlert ? { ...base, fill: FILL_LEVELS[this.#level()], fillAlerts: this.fillAlerts } : base;
   }
 }
@@ -1198,7 +1259,8 @@ export function rateLimiterFillLine(name, info) {
 // /health fragment for the gateway rate-limit tables. deniedFull counts
 // deny-on-full refusals, deniedPrefix /48-cap refusals (faucetIp),
 // evicted table-full evictions and evictedPrefix /48-cap evictions (60s
-// tables). Tables with fillAlert also report fill ("ok" | "high" | "full").
+// tables). Tables with fillAlert also report fill ("ok" | "high" | "full");
+// faucetPrefix also reports deniedLimit (prefixes refused for the day).
 export function rateLimitersHealth(limits) {
   const out = {};
   for (const name of Object.keys(limits)) out[name] = limits[name].stats();
@@ -1208,6 +1270,23 @@ export function rateLimitersHealth(limits) {
 // the body is read. Well above the 5-per-day drip quota, so it only bites a
 // client that is hammering the endpoint or holding slow bodies open.
 export const FAUCET_ATTEMPTS_PER_MINUTE = 10;
+// R4-1: daily faucet budget per client prefix, in front of faucetGlobal. One
+// global 200/h bucket let a few /48s or a thousand IPv4 addresses, pacing
+// fresh receiver addresses, drain it for every new user all day. 20 drips per
+// IPv6 /48 or IPv4 /24 per day (Red Team's prototype). Tradeoff: a shared /48
+// or /24 (campus, CGNAT) gets at most 20 drips a day between all its users.
+export const FAUCET_PREFIX_DRIPS_PER_DAY = 20;
+// faucetPrefix key for a rate-limit key: "<hhhh:hhhh:hhhh>::/48" for an IPv6
+// /64 bucket, "a.b.c.0/24" for an IPv4 address; undefined for anything else
+// ("unknown", "proxy:..."), which then has no prefix budget.
+export function faucetPrefixKey(ipKey) {
+  if (typeof ipKey !== "string") return undefined;
+  const v6 = rateLimiterIpv6Prefix48(ipKey);
+  if (v6) return v6;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ipKey);
+  if (!v4 || v4.slice(1).some((octet) => Number(octet) > 255)) return undefined;
+  return `${Number(v4[1])}.${Number(v4[2])}.${Number(v4[3])}.0/24`;
+}
 // The gateway's rate-limit tables (exported so tests can check the wiring).
 export function createGatewayLimits({ env = process.env, log = (line) => console.warn(line) } = {}) {
   const limiterMaxKeys = rateLimiterMaxKeys(env);
@@ -1220,6 +1299,8 @@ export function createGatewayLimits({ env = process.env, log = (line) => console
     faucetAddress: new WindowLimiter(1, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS, fillOpts("faucetAddress")),
     // #1213-5: every /faucet attempt per IP per minute, taken before the body is read.
     faucetAttempt: new WindowLimiter(FAUCET_ATTEMPTS_PER_MINUTE, 60_000, limiterMaxKeys, shortWindowOpts("faucetAttempt")),
+    // R4-1: per IPv6 /48 / IPv4 /24 day budget, peeked and taken with the other faucet tables.
+    faucetPrefix: new WindowLimiter(FAUCET_PREFIX_DRIPS_PER_DAY, DAY_MS, DAY_WINDOW_LIMITER_MAX_KEYS, { countLimited: true, ...fillOpts("faucetPrefix") }),
     faucetGlobal: new WindowLimiter(200, 3_600_000, 1),
     snapshot: new WindowLimiter(30, 3_600_000, 1),
     relayIp: new WindowLimiter(Number(env.ZYRON_RELAY_REQUESTS_PER_MINUTE_PER_IP ?? 1200), 60_000, limiterMaxKeys, shortWindowOpts("relayIp"))
@@ -2534,14 +2615,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
     response.end(explorerHtml);
   }
   const limited = (response, r) => sendJson(response, 429, { error: "rate limit exceeded" }, { "retry-after": String(Math.max(1, Math.ceil(r.retryAfterMs / 1000))) });
-  async function readJsonBody(request) {
-    if (!String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) throw Object.assign(new Error("content-type must be application/json"), { statusCode: 415 });
-    if (Number(request.headers["content-length"] ?? 0) > MAX_BODY_BYTES) throw Object.assign(new Error("request body too large"), { statusCode: 413 });
-    let size = 0; const chunks = [];
-    for await (const chunk of request) { size += chunk.length; if (size > MAX_BODY_BYTES) throw Object.assign(new Error("request body too large"), { statusCode: 413 }); chunks.push(chunk); }
-    try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(new Error("invalid JSON"), { statusCode: 400 }); }
-  }
-  const faucetRoute = createFaucetRoute({ origins: faucetOrigins, limits, faucetAddress: faucet.address, readJsonBody, send: faucetSend, durabilityView: async () => submitDurableView((await chainStatus()).height) });
+  function readJsonBody(request, maxBytes = MAX_BODY_BYTES) { return readJsonRequestBody(request, maxBytes); }
+  const faucetRoute = createFaucetRoute({ origins: faucetOrigins, limits, faucetAddress: faucet.address, readJsonBody, send: faucetSend, durabilityView: async () => submitDurableView((await chainStatus()).height), reservedReceivers: faucetGenesisReservedReceivers(genesis) });
   // Explorer view of a block: summary fields only.
   function summarizeBlock(block) {
     return {
@@ -2843,8 +2918,13 @@ if (!invokedDirectly) {
   const port = await listenGateway(server, Number(option("--port", process.env.PORT ?? "10000")), host);
   console.log(`gateway listening on ${host}:${port} (starting; full RPC once the validators are up)`);
   // --init-if-missing is for hosts without a persistent disk (for example a
-  // free web service): a missing directory gets a fresh TEST genesis, so every
-  // cold start is a new network with a new genesis hash.
+  // free web service). With --restore-url and the state secret, a missing
+  // directory is restored from the published snapshot; a failed restore exits
+  // 1, and a fresh TEST genesis is created only when nothing is published (a
+  // 404 after the 160 s retry) and ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1 is set
+  // (deploy/open-testnet/render.yaml leaves it unset). Without a restore URL
+  // or secret, a missing directory gets a fresh TEST genesis (a new network
+  // with a new genesis hash on every cold start).
   const stateSecret = process.env.ZYRON_TESTNET_STATE_SECRET || undefined;
   let persistence = { mode: "local-disk" };
   let verifiedHistory;
@@ -2898,9 +2978,10 @@ if (!invokedDirectly) {
         // Fail closed: a snapshot that cannot be downloaded, decrypted or
         // re-validated (tampering, a wrong state secret, a non-200 answer after
         // every retry) must never be replaced by a fresh TEST genesis with new
-        // keys under the same chain ID. Only a confirmed 404 (nothing published)
-        // creates a fresh genesis. An operator who wants a new chain removes the
-        // published snapshot.
+        // keys under the same chain ID; start-up exits 1. Only a confirmed 404
+        // (nothing published) with ZYRON_TESTNET_ALLOW_FRESH_GENESIS=1 creates a
+        // fresh genesis. An operator who wants a new chain removes the published
+        // snapshot and sets that variable on purpose.
         console.error(`STATE RESTORE FAILED (${error instanceof Error ? error.message : String(error)}); refusing to create a fresh TEST genesis under the published chain ID; stopping so the host restarts the instance`);
         const aside = await moveAsideIncompleteNetworkDir(dir).catch(() => false);
         if (aside) console.error(`moved the failed restore directory to ${aside}`);
