@@ -1423,10 +1423,12 @@ export function snapshotClientRole(authorizationHeader, stateSecret) {
   return "reject";
 }
 
-// Production /state/snapshot path used by runNetwork: auth BEFORE any
-// snapshots.fresh / takeRate / sealed read. Rejected requests (anonymous
-// included) get 401 and touch no limiter or cache; only the keeper bucket
-// exists.
+// /state/snapshot helper used by runNetwork: auth BEFORE any snapshots.fresh /
+// takeRate / sealed read. Rejected requests (anonymous included) get 401 and
+// touch neither the cache nor the snapshotKeeper bucket; only the keeper bucket
+// exists. In runNetwork the same role check also runs before the shared per-IP
+// `read` limiter, so a rejected request spends no read slot either; a valid
+// keeper request does pass `read` first (S27-R3 follow-up).
 export function serveAuthorizedSnapshotRoute(response, snapshots, {
   genesisHash, stateSecret, authorization, limits, limited = () => {},
   sendUnauthorized = (res) => writeJson(res, 401, { error: "unauthorized" })
@@ -2426,6 +2428,14 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           const { code, status, starting, progress } = startup.liveness({ ok, everReady, path });
           return sendJson(response, code, { ok, status, ...(starting ? { phase: "validators" } : {}), ...(!ok && !everReady ? { startup: progress } : {}), network: "testnet", valueBearing: false, chainId, commit: buildCommit(), gateway: gatewayProcessInfo(), persistence, peerCap: watermark ? "durable" : "off", ...(watermark ? watermark.status() : {}), quorum, activeValidatorCount, activeValidatorsUp, activeSetHeight, activeSetSource, activeSetFallback, activeSetSeed: seed, ...(activeSetRejected ? { activeSetRejected } : {}), ...(snapshots ? { snapshotCache: snapshots.status() } : {}), rateLimiters: rateLimitersHealth(limits), memory: memoryReportMb(currentMemory()), validatorsUp: up.length, maxHeight: heights.length ? Math.max(...heights) : null, checkedAtMs, validators });
         }
+        // S2-7 (Security 1205-r2 LOW): /state/snapshot checks the keeper bearer
+        // BEFORE the shared per-IP read limiter, so a request without the exact
+        // derived bearer always gets 401 and spends no read slot (it cannot turn
+        // into 429, nor push that IP's other GETs into 429). A valid keeper still
+        // passes limits.read below (S27-R3 follow-up), then the keeper bucket.
+        if (path === "/state/snapshot" && stateSecret && snapshotClientRole(request.headers.authorization, stateSecret) !== "keeper") {
+          return sendJson(response, 401, { error: "unauthorized" });
+        }
         const rate = limits.read.take(ip);
         if (!rate.allowed) return limited(response, rate);
         // Read-only peer surface for volunteer follower nodes (`node --peer <gateway>/peer`):
@@ -2445,7 +2455,8 @@ export async function runNetwork(dir, { gatewayPort, basePort = 9300, host = "12
           return sendJson(response, result.status === 200 ? 200 : 502, result.status === 200 ? { ...result.body, blocks: result.body.blocks.slice(0, capped) } : { error: "node unavailable" }, PEER_RPC);
         }
         if (path === "/state/snapshot" && stateSecret) {
-          // S2-7: auth/role before any cache work; keeper bearer is HMAC-derived (raw secret never sent).
+          // S2-7: only a valid keeper bearer reaches here (rejects answered 401
+          // above, before limits.read); the helper re-checks it before any cache work.
           return serveAuthorizedSnapshotRoute(response, snapshots, {
             genesisHash: info.genesisHash, stateSecret, authorization: request.headers.authorization,
             limits, limited, sendUnauthorized: (res) => sendJson(res, 401, { error: "unauthorized" })

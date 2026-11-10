@@ -103,6 +103,19 @@ test("S27 gateway: #1200 read/relayIp limits, /48 cap, evict-on-full and /health
     assert.equal(await get("/state/snapshot", "198.51.100.21", { authorization: "" }), 401, "empty Authorization");
     assert.equal(await get("/state/snapshot", "198.51.100.22", { authorization: `Bearer ${secret}` }), 401, "raw state secret");
     assert.equal((await health()).snapshotKeeper.size, 0, "rejected requests touch no snapshot bucket");
+
+    // Security 1205-r2 LOW: the 401 comes before the shared per-IP read limiter.
+    // One IP sends 300 unauthenticated requests in one window (100x its read
+    // limit here, and more than the 240/min default): every one is 401, none
+    // spends a read slot, and a normal GET from that IP is still served.
+    const sprayer = "198.51.100.30";
+    const readSizeBefore = (await health()).read.size;
+    const spray: number[] = [];
+    for (let i = 0; i < 300; i += 1) spray.push(await get("/state/snapshot", sprayer, i % 3 === 0 ? {} : i % 3 === 1 ? { authorization: "" } : { authorization: "Bearer not-the-keeper-token" }));
+    assert.deepEqual([...new Set(spray)], [401], `every unauthenticated request is 401 (never 429); got ${[...new Set(spray)].join(",")}`);
+    assert.equal((await health()).read.size, readSizeBefore, "no read-table key was created for the sprayer");
+    for (let i = 0; i < READS_PER_MINUTE; i += 1) assert.notEqual(await get("/no-such-route", sprayer), 429, `normal GET ${i} from the sprayer is served`);
+    assert.equal(await get("/no-such-route", sprayer), 429, "the sprayer still has its own full read quota, and no more");
     const keeper = await get("/state/snapshot", "198.51.100.23", { authorization: `Bearer ${api.deriveSnapshotKeeperBearer(secret)}` });
     assert.ok(keeper === 200 || keeper === 503, `the derived keeper bearer is accepted (200, or 503 before the first build); got ${keeper}`);
   } finally {

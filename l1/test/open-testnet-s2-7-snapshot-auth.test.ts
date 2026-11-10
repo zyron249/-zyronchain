@@ -156,7 +156,10 @@ test("S27 constant-time compare covers length (SHA-256 then timingSafeEqual)", (
 
 // ---- S27-T1 ----------------------------------------------------------------
 // Original checklist intent (S2-7 / S27-R2): unauthenticated requests get 401
-// before any work: no cache read, no refresh, no sealed bytes, no limiter.
+// before any work: no cache read, no refresh, no sealed bytes, and no
+// snapshotKeeper slot (this harness has no read limiter). On the production
+// route the 401 also comes before the shared per-IP read limiter, so it spends
+// no read slot; open-testnet-s2-7-gateway-limits.test.ts checks that.
 
 test("S27-T1 snapshot-route-rejects-unauthenticated", async () => {
   const { snapshots, calls } = spySnapshots();
