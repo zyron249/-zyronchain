@@ -1,0 +1,65 @@
+name: Supply Verifier Pin Guard Custody Policy CI
+
+# Checks the pull_request_target pin-guard workflow against its allowlisted
+# shape, runs the custody mutation tests and the checker's fixture tests
+# (offline), and rebuilds this tree with the real TypeScript to confirm the
+# committed pin. It does not run the pin guard itself; that runs from main
+# in supply-verifier-pin-guard.yml.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/supply-verifier-pin-guard.yml'
+      - '.github/workflows/supply-verifier-pin-guard-custody-policy.yml'
+      - '.github/scripts/verify-supply-verifier-pin-guard.mjs'
+      - '.github/scripts/test-supply-verifier-pin-guard.mjs'
+      - '.github/scripts/verify-supply-verifier-pin-guard-custody.mjs'
+      - '.github/scripts/test-supply-verifier-pin-guard-custody-mutations.mjs'
+      - 'tools/supply-verifier/build.mjs'
+      - 'tools/supply-verifier/hash.mjs'
+      - 'tools/supply-verifier/pin-hash.mjs'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/supply-verifier-pin-guard.yml'
+      - '.github/workflows/supply-verifier-pin-guard-custody-policy.yml'
+      - '.github/scripts/verify-supply-verifier-pin-guard.mjs'
+      - '.github/scripts/test-supply-verifier-pin-guard.mjs'
+      - '.github/scripts/verify-supply-verifier-pin-guard-custody.mjs'
+      - '.github/scripts/test-supply-verifier-pin-guard-custody-mutations.mjs'
+      - 'tools/supply-verifier/build.mjs'
+      - 'tools/supply-verifier/hash.mjs'
+      - 'tools/supply-verifier/pin-hash.mjs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up the published Node version
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: tools/supply-verifier/.nvmrc
+      - name: Verify the pin-guard workflow custody
+        run: node .github/scripts/verify-supply-verifier-pin-guard-custody.mjs
+      - name: Verify the pin-guard custody policy rejects unsafe shapes
+        run: node .github/scripts/test-supply-verifier-pin-guard-custody-mutations.mjs
+      - name: Install the l1 TypeScript toolchain (no install scripts)
+        working-directory: l1
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Pin-guard checker fixture tests and real rebuild of this tree
+        env:
+          PIN_GUARD_TOOLCHAIN: l1/node_modules
+        run: node .github/scripts/test-supply-verifier-pin-guard.mjs

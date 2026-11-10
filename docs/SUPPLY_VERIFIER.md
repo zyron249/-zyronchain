@@ -63,6 +63,33 @@ node tools/supply-verifier/hash.mjs               # sha256 of the artifact
 
 The archive is plain ustar with sorted paths, mtime 0, uid and gid 0, mode 0644 and no owner names, so the same commit with the same Node major version and the locked TypeScript gives a byte-identical file. `dist/MANIFEST.sha256` lists a hash per file. `test/build.test.mjs` checks that two builds hash the same. To run the extracted artifact, run `npm ci` in its `l1/` directory.
 
+### Pin guard
+
+`.github/workflows/supply-verifier-pin-guard.yml` adds a check next to the reproducible build and does not replace it. It runs on `pull_request_target` for PRs into `main`, including label changes. GitHub runs the workflow file and its checker, `.github/scripts/verify-supply-verifier-pin-guard.mjs`, as they are on `main`, so a PR can't edit the checker that judges it. The job has read-only `contents` permission, uses no secrets, and doesn't persist credentials. It installs `main`'s TypeScript from `main`'s `l1/package-lock.json` with `npm ci --ignore-scripts` before it fetches any PR data. It then reads the PR head as git data only. Nothing from the PR is checked out, installed, or executed.
+
+Against the merge base with `main`, the checker:
+
+1. Requires `EXPECTED_SHA256` to exist and be well-formed.
+2. Rebuilds the tar from the PR's files with `main`'s `l1/tsconfig.json`, TypeScript, `build.mjs`, and `hash.mjs`, whenever the pin or a hashed input changed. The result must equal the PR's pin, which also catches an input change without a pin update. It prints the per-file `MANIFEST.sha256` diff between the merge base and the head, and writes it to the job summary.
+3. Fails a pin move when no hashed input changed.
+4. Requires the label `patron-approved-pin` when the pin changes, or when one of these files changes: `l1/src/tokenomics.ts`, `l1/src/supply-report.ts`, `l1/src/allocation-locks.ts`, `l1/src/miner-genesis.ts`, `l1/src/founder-vesting.ts`, `l1/genesis-message.json`, `docs/fixed-supply-launch-plan.json`, `l1/scripts/validate-fixed-supply-genesis.mjs`, `tools/supply-verifier/src/**`, or `tools/supply-verifier/*.mjs`.
+
+The label is only a second gate. Checks 1 to 3 fail even when the label is present.
+
+Toolchain rules (decided by Patron):
+
+- The toolchain install uses `main`'s `l1/package-lock.json` only. It never falls back to the PR's lockfile or `package.json`.
+- The guard fails closed, even with the label, when a PR changes the TypeScript entries in `l1/package-lock.json`, changes `l1/tsconfig.json`, or has an `l1/src` that doesn't compile against `main`'s dependencies.
+- Such a toolchain PR lands on its own, with Security's independent rebuild.
+
+Limits:
+
+- The label is advisory. Every bot acts through the same `zyron249` account, so any of them can add it, and the event payload doesn't show whether the label was added after the last push. A label-timing check, requiring the label to be added after the last push, is a required follow-up. It must land before the guard is proposed as a required check.
+- The guard blocks a merge only once branch protection makes it a required check, and that is the repository owner's decision.
+- Security's independent rebuild (CONTRIBUTING.md) stays mandatory.
+
+`.github/workflows/supply-verifier-pin-guard-custody-policy.yml` pins the workflow's exact shape and runs the mutation and fixture tests.
+
 ### Publishing hashes
 
 No hashes are published yet. For a release:
