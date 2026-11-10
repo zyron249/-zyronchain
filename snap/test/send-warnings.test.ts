@@ -101,11 +101,18 @@ async function signAndApprove(request: Awaited<ReturnType<typeof installSnap>>['
 }
 
 describe('send warnings in the Snap dialogs', () => {
-  it('first-time warning, then none for a repeat receiver, then a lookalike with marked characters', async () => {
+  it('a sign-only transfer keeps the first-time warning for that receiver', async () => {
     const { request } = await installSnap({ options: { secretRecoveryPhrase: PRIMARY.mnemonic } });
     const first = await signAndApprove(request, {});
     expect(first).toMatch(/First-time recipient/u);
     expect(first).toContain(sw.displayAddress(RECEIVER));
+    expect(await signAndApprove(request, { nonce: 2 })).toMatch(/First-time recipient/u);
+  });
+
+  it('no warning for a receiver in the sent-to history, then a lookalike with marked characters', async () => {
+    // Sent-to history as a submitted zyron_sendTransfer leaves it (sign-only never records).
+    const state = { known: { contacts: [], sent: [RECEIVER], thresholdAtoms: sw.DEFAULT_WARNING_THRESHOLD_ATOMS } };
+    const { request } = await installSnap({ options: { secretRecoveryPhrase: PRIMARY.mnemonic, state } });
     const again = await signAndApprove(request, { nonce: 2 });
     expect(again).not.toMatch(/First-time recipient|Lookalike/u);
     const look = await signAndApprove(request, { nonce: 3, receiver: POISON });
@@ -133,6 +140,18 @@ describe('send warnings in the Snap dialogs', () => {
     expect(await pending).toRespondWith({ thresholdAtoms: 150_000_000 });
     expect(await signAndApprove(request, {})).toMatch(/Large amount/u);
     expect(await signAndApprove(request, { nonce: 2, amountAtoms: 149_999_999 })).not.toMatch(/Large amount/u);
+  });
+
+  it('turning the large-amount warning off needs a confirmed dialog that says it is being disabled', async () => {
+    const { request } = await installSnap({ options: { secretRecoveryPhrase: PRIMARY.mnemonic } });
+    const pending = request({ method: 'zyron_setWarningThreshold', origin: ORIGIN, params: { thresholdAtoms: null } as any });
+    const ui = (await pending.getInterface()) as SnapConfirmationInterface;
+    const text = renderedText(ui.content);
+    expect(text).toMatch(/Disable the large-amount warning/u);
+    expect(text).toMatch(/no longer warn/u);
+    expect(text).toContain(ORIGIN);
+    await ui.ok();
+    expect(await pending).toRespondWith({ thresholdAtoms: null });
   });
 
   it('declining the threshold dialog changes nothing', async () => {
