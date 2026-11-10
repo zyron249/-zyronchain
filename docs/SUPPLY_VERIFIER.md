@@ -76,11 +76,15 @@ Against the merge base with `main`, the checker:
 
 The label is only a second gate. Checks 1 to 3 fail even when the label is present.
 
-If a PR changes the TypeScript entries in `l1/package-lock.json` or changes `l1/tsconfig.json`, `main`'s toolchain can't reproduce the PR's build. The guard then fails closed and says so. Land such a change on its own, or have Security rebuild it independently. The same applies when `l1/src` doesn't compile against `main`'s installed dependencies.
+Toolchain rules (decided by Patron):
+
+- The toolchain install uses `main`'s `l1/package-lock.json` only. It never falls back to the PR's lockfile or `package.json`.
+- The guard fails closed, even with the label, when a PR changes the TypeScript entries in `l1/package-lock.json`, changes `l1/tsconfig.json`, or has an `l1/src` that doesn't compile against `main`'s dependencies.
+- Such a toolchain PR lands on its own, with Security's independent rebuild.
 
 Limits:
 
-- The label is advisory. Every bot acts through the same `zyron249` account, so any of them can add it, and the event payload doesn't show whether the label was added after the last push.
+- The label is advisory. Every bot acts through the same `zyron249` account, so any of them can add it, and the event payload doesn't show whether the label was added after the last push. A label-timing check, requiring the label to be added after the last push, is a required follow-up. It must land before the guard is proposed as a required check.
 - The guard blocks a merge only once branch protection makes it a required check, and that is the repository owner's decision.
 - Security's independent rebuild (CONTRIBUTING.md) stays mandatory.
 

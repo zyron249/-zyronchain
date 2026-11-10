@@ -12,6 +12,13 @@ name: Supply Verifier Pin Guard (main checker)
 # installed or executed. Labels are read from the event payload. No secrets
 # are used, the token is read-only and never persisted. The checker must
 # exist on main: if it is missing, throws or exits non-zero, the job FAILS.
+# Toolchain rules (Patron, 2026-11-10):
+# - The install uses MAIN's l1/package-lock.json only. There is never a
+#   fallback to the PR's lockfile or package.json.
+# - The checker fails closed when the PR changes the TypeScript toolchain in
+#   l1/package-lock.json, changes l1/tsconfig.json, or does not compile
+#   against main's dependencies. The label does not override this.
+# - Such toolchain PRs land on their own, with Security's independent rebuild.
 # .github/scripts/verify-supply-verifier-pin-guard-custody.mjs pins the exact
 # shape of this file; change both together.
 

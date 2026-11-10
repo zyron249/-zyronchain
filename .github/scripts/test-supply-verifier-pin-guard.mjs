@@ -215,6 +215,17 @@ if (process.env.PIN_GUARD_TOOLCHAIN) {
   console.log('# real TypeScript rebuild of HEAD not run here: set PIN_GUARD_TOOLCHAIN to l1/node_modules installed from main\'s lockfile with --ignore-scripts');
 }
 
+// No fallback to the PR's lockfile (Patron ruling: main's lockfile only).
+await test("no PR-lockfile fallback: the toolchain is judged against main's lockfile, and the checker never runs npm", () => {
+  const src = readFileSync(CHECKER, 'utf8');
+  assert.equal((src.match(/readFileSync\(join\(MAIN_ROOT, 'l1\/package-lock\.json'\), 'utf8'\)/g) ?? []).length, 1, "main's lockfile must be read from MAIN_ROOT exactly once");
+  assert.doesNotMatch(src, /execFileSync\(\s*['"](?:npm|npx|yarn|pnpm)['"]|['"]npm['"],\s*\[|['"]ci['"]\s*,\s*['"]--/, 'the checker must not run a package manager');
+});
+await test("no PR-lockfile fallback: a head whose lockfile toolchain differs from main's fails even when the stand-in could build it", () => {
+  const { dir, head } = fixture((f) => { const lock = JSON.parse(f['l1/package-lock.json']); lock.packages['node_modules/typescript'].resolved = 'https://example.invalid/typescript.tgz'; f['l1/package-lock.json'] = `${JSON.stringify(lock, null, 2)}\n`; }, { pin: 'correct' });
+  expectFail(run(dir, head, L), /TypeScript toolchain in l1\/package-lock\.json differs from main's/);
+});
+
 // Pure parts.
 await test('evaluatePinGuard: the label never rescues a failing pin', () => {
   const good = `${'a'.repeat(64)}  zyron-supply-verifier.tar\n`;

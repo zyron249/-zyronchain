@@ -51,6 +51,13 @@ const mutations = {
   '[lint] secrets in env': replaceOnce(workflow, '          PR_NUMBER:', '          TOK: ${{ secrets.X }}\n          PR_NUMBER:'),
   '[lint] GITHUB_TOKEN in env': replaceOnce(workflow, '          PR_NUMBER:', '          GH_TOKEN: ${{ github.token }}\n          PR_NUMBER:'),
   '[lint] token: on checkout': after('          fetch-depth: 0\n', '          token: ${{ secrets.PAT }}\n'),
+  // No fallback to the PR's lockfile (Patron ruling: main's lockfile only).
+  '[lint] PR lockfile copied over main\'s before the checker': at(BEFORE_CHECK, '          git show "$PR_HEAD_SHA":l1/package-lock.json > l1/package-lock.json\n'),
+  '[lint] PR lockfile fallback install when the checker fails': replaceOnce(workflow, '--scratch "$RUNNER_TEMP/pin-guard"\n', '--scratch "$RUNNER_TEMP/pin-guard" || { git show "$PR_HEAD_SHA":l1/package-lock.json > l1/package-lock.json; (cd l1 && npm ci --ignore-scripts); }\n'),
+  '[lint] PR lockfile fallback in the install step': replaceOnce(workflow, NPM, '        run: npm ci --ignore-scripts --no-audit --no-fund || npm install --ignore-scripts\n'),
+  '[lint] PR lockfile fetched with git cat-file and installed': at(BEFORE_CHECK, '          git cat-file blob "$PR_HEAD_SHA":l1/package-lock.json | tee l1/package-lock.json\n'),
+  '[lint] PR package.json restored into main\'s l1/': at(BEFORE_CHECK, '          git restore --source="$PR_HEAD_SHA" -- l1/package.json l1/package-lock.json\n'),
+  '[lint] install from the PR lockfile via --prefix': replaceOnce(workflow, NPM, '        run: npm ci --ignore-scripts --no-audit --no-fund --prefix ../pr/l1\n'),
   // Other unsafe shapes.
   '[lint] checkout of the head via ref:': after('          fetch-depth: 0\n', '          ref: ${{ github.event.pull_request.head.sha }}\n'),
   '[lint] head SHA interpolated into the run script': replaceOnce(workflow, CHECKER, 'node .github/scripts/verify-supply-verifier-pin-guard.mjs --merge-base origin/main --head ${{ github.event.pull_request.head.sha }}'),

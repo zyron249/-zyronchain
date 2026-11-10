@@ -14,6 +14,8 @@
 // data is fetched, setup-node caching, any reference to a
 // pr/ checkout directory, a checkout without persist-credentials: false, a
 // pull_request trigger, extra or job-level permissions, secrets or the token,
+// a run script that writes files or puts PR content on disk (for example a
+// fallback to the PR's l1/package-lock.json),
 // ${{ }} in the run script, ref:, if:, continue-on-error.
 // Any change to the workflow must change this list in the same reviewed PR.
 import { readFile } from 'node:fs/promises';
@@ -96,6 +98,10 @@ export function lintPinGuardWorkflow(lines) {
   if (/(?<![\w/.-])(?:\.\/)?pr\//.test(body) || /\bpath\s*:/.test(body)) fail('a pr/ checkout directory (or any checkout path) is not allowed');
   if (/\bsecrets\b|github\.token|GITHUB_TOKEN|\btoken\s*:/.test(body)) fail('secrets and tokens are not allowed');
   if (/\$\{\{/.test(run)) fail('${{ }} expressions are not allowed in the run script');
+  // No PR-lockfile fallback and no PR files on disk: the run script never
+  // writes files or materializes head content (main's l1/package-lock.json is
+  // the only lockfile the toolchain install and the checker may see).
+  if (/>/.test(run) || /\bgit\s+(?:show|archive|checkout|restore|switch|worktree|read-tree|checkout-index|apply|am|merge|reset|stash)\b/.test(run) || /\b(?:cp|mv|tee|install|ln|dd|curl|wget)\b/.test(run)) fail('the run script must not write files or put PR content on disk (no PR-lockfile fallback)');
   if (/^\s+ref\s*:/m.test(body) || /^\s+(?:-\s+)?if\s*:/m.test(body) || /continue-on-error/.test(body)) fail('ref:, if: and continue-on-error are not allowed');
   const uses = [...body.matchAll(/\buses\s*:\s*(\S+)/g)].map((m) => m[1]);
   if (uses.length !== 2 || uses[0] !== CHECKOUT || uses[1] !== SETUP_NODE) fail('only the pinned checkout and setup-node actions are allowed, once each');
