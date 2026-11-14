@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/scripts/open-testnet-snapshot-keeper.mjs'
       - '.github/scripts/test-open-testnet-snapshot-keeper.mjs'
+      - '.github/scripts/open-testnet-lag-detector.mjs'
+      - '.github/scripts/test-open-testnet-lag-detector.mjs'
       - '.github/workflows/open-testnet-snapshot-keeper.yml'
       - '.github/workflows/open-testnet-snapshot-keeper-ci.yml'
       - 'deploy/open-testnet/snapshot-keeper.sh'
@@ -17,6 +19,8 @@ on:
     paths:
       - '.github/scripts/open-testnet-snapshot-keeper.mjs'
       - '.github/scripts/test-open-testnet-snapshot-keeper.mjs'
+      - '.github/scripts/open-testnet-lag-detector.mjs'
+      - '.github/scripts/test-open-testnet-lag-detector.mjs'
       - '.github/workflows/open-testnet-snapshot-keeper.yml'
       - '.github/workflows/open-testnet-snapshot-keeper-ci.yml'
       - 'deploy/open-testnet/snapshot-keeper.sh'
@@ -46,5 +50,7 @@ jobs:
           node-version: 24
       - name: Keeper rules and workflow policy tests
         run: node --test .github/scripts/test-open-testnet-snapshot-keeper.mjs
+      - name: Durable lag detector tests
+        run: node --test .github/scripts/test-open-testnet-lag-detector.mjs
       - name: Legacy machine keeper refuses a foreign genesis
         run: node --test deploy/open-testnet/test-snapshot-keeper.mjs

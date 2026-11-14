@@ -184,6 +184,34 @@ The current validator set is run by the project from one host, so it is **not** 
 
 Never send a private key, password file or signer token to anyone, including project maintainers.
 
+### Durable lag alarm
+
+Blocks above `durableHeight` are lost on a cold start, so the Actions snapshot keeper raises an alarm when publishing falls behind. On 2026-11-02, `durableHeight` stayed at 12966 from about 10:28 to 11:52 ET while the tip reached 13131. The 10:41 ET deploy then restored 12966 and replaced 165 blocks.
+
+A sampling loop of its own reads `/health` every 45 seconds. It runs independently of the publish loop, so a long publish cycle never pauses it. Reads closer together than 40 seconds are ignored. Each usable read adds `{ts, height: maxHeight, durableHeight}` to a rolling buffer of at most 1000 samples. The buffer resets when `chainId` changes or `durableHeight` goes down (a rollback or new genesis). Lag is computed per sample (`height - durableHeight`), so a single spike cannot latch the alarm. The keeper evaluates these conditions:
+
+| Alarm | Fires when | Defaults (workflow env to change) |
+|---|---|---|
+| `lag` | `maxHeight - durableHeight` is above the limit for N consecutive samples | 20 blocks (`LAG_MAX_BLOCKS`), 3 samples (`LAG_CONSECUTIVE`) |
+| `stale` | `durableHeight` has not advanced within the window while the tip kept moving (a halted chain is not a stale alarm) | 20 minutes (`LAG_STALE_MINUTES`) |
+| `unreadable` | A run of unreadable reads (non-200, invalid JSON, timeout, or a body without integer `maxHeight` and `durableHeight`), or no usable read within the stale window | 5 reads (`LAG_MAX_UNREADABLE`) |
+| `detector-error` | The detector throws; sampling continues | - |
+| `trail` | The published snapshot height trails `snapshotCache.lastBuiltHeight` by more than the limit, continuously, for longer than the stale window | 20 blocks (`PUBLISH_TRAIL_MAX_BLOCKS`) |
+
+All five settings must be whole numbers (digits only). The keeper validates them once at start-up and refuses to start if any is invalid.
+
+For `trail`, the published height is the higher of the keeper's own last published (or confirmed up-to-date) height and the gateway's `durableHeight`.
+
+An alarm is reported once per episode as a GitHub `::error` annotation and in a "Durable lag alarm" line of the job summary. The keeper keeps publishing until its deadline: an alarm never stops it early. The run then fails, so the failed keeper run is the alert. The detector is `.github/scripts/open-testnet-lag-detector.mjs`, and it is tested with a replay of the Nov 2 gap.
+
+`/health` also reports `lastPublishSeenAtMs`: when this gateway first verified the published snapshot at the current `durableHeight`. It is `null` until a published snapshot moves the watermark after start-up. This is the gateway's observation, at most one watermark refresh after the keeper's upload. It is not the keeper's own publish time, which the gateway cannot know without trusting extra release metadata.
+
+When the alarm fires:
+1. Open the failed run's log and check the `/health` lines and the cycle failures (for example `503`).
+2. Check `/health` `snapshotCache` (building, failures, lastError) and `durableHeight`.
+3. If no keeper run is active, dispatch the keeper workflow on `main`.
+4. Do not redeploy the gateway while `durableHeight` trails the tip. A redeploy restores `durableHeight` and drops every block above it.
+
 ## Followers and cold starts (durable watermark)
 
 The hosted instance has no persistent disk. A cold start restores the newest
