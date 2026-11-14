@@ -215,6 +215,57 @@ passed only to its step). With it, the snapshot height and genesis come from the
 authenticated body, and a mismatch stops the run without publishing. Without it,
 the keeper refuses to run unless `ZYRON_KEEPER_ALLOW_UNAUTHENTICATED=1` is set.
 
+## Testnet rollbacks
+
+The open testnet has no value, and it can roll back. When the gateway restarts, it restores the
+newest published snapshot (see the section above). Any blocks above that snapshot are lost, and the
+validators produce those heights again with different blocks.
+
+**What wallet users see.** The tip height drops back to `durableHeight` and then climbs again.
+Balances, nonces and transfers that were only in blocks above `durableHeight` (`durable: false`) can
+disappear. Anything that was `durable: true` is kept. A missing transfer is still validly signed and has no expiry: it is bound to this chain and to its sender nonce, and anyone holding a copy (it was served publicly in the rolled-back blocks) can re-broadcast it, so it may come back without you sending it. It stays valid until a transaction with that nonce is included. Before sending again, check `/nonce` and your balance. If the nonce has already moved past the transfer's nonce, or your balance already reflects it, it was re-included: do not re-send. Otherwise, re-broadcast the original signed transaction, or sign the new one with the **same nonce** as the original (your wallet does this when it reads the nonce from `/nonce`). Only one transaction per nonce can be included, so the original and your re-send cannot both land. Never sign the payment again at a higher nonce while the original is still unconfirmed; if someone re-broadcasts the original, both are valid and you pay twice. A re-send at the same nonce while the original is pending is refused as "Conflicting sender nonce" unless it pays a higher fee rate, which replaces the original.
+
+Incoming transfers can disappear too; a payment you received above `durableHeight` is not final until it is `durable: true`.
+
+**What operators see.** Followers with the durable cap on only ever received blocks up to
+`durableHeight`, so they keep their chain and continue from it. `/health` shows `durableHeight`
+staying put until the keeper publishes a new snapshot. A follower that synced past `durableHeight`
+(cap off) may be on a fork. Resync procedure: [TO CONFIRM WITH OPS].
+
+### Nov 2, 2026 rollback
+
+All times are ET.
+
+- **What happened.** The last keeper run before the incident ended at 10:28 and published 4 of its
+  34 cycles. The other 30 failed with 503 while the gateway restarted. Its last publish was height
+  12966, which became the restore floor. GitHub dropped the next scheduled keeper run. The highest
+  height seen before the restore was 13131 at 10:40, from Ops' `/health` observations. The deploy of
+  commit 4c0f3bb started at about 10:41, restored from 12966 and replayed until about 11:16. That was
+  the deploy finishing its replay, not a crash. The gateway was ready at 11:18 at height 12967.
+- **Blocks lost.** 165 blocks, heights 12967 to 13131.
+- **Detection.** Between 11:20 and 11:26, `durableHeight` in `/health` stayed at 12966. No alarm
+  fired. A keeper run was started by hand at 11:26. At 12:02, `/health` showed `durableHeight` 13045,
+  `maxHeight` 13055, status ready, and 4 of 4 validators.
+- **Operator nodes.** The rehearsal node caught up on its own, and its fork check was OK at 12966.
+- **Follower resync.** With the default durable peer cap, followers needed no action: they only
+  received blocks up to `durableHeight` (see
+  [Followers and cold starts](#followers-and-cold-starts-durable-watermark)). Setting
+  `ZYRON_TESTNET_DURABLE_PEERS=0` turns that cap off. To set up a follower, see
+  [Validator onboarding, section 5](VALIDATOR_ONBOARDING.md#5-run-a-follower-against-the-hosted-testnet).
+  Never restore a signing validator's data directory from an old backup or snapshot; see
+  [section 7, Operating rules](VALIDATOR_ONBOARDING.md#7-operating-rules). How a node with the cap
+  disabled that followed the rolled-back blocks checks for the fork and recovers on the same genesis:
+  [TO CONFIRM WITH OPS].
+- **Fixes (merged).** [#1167](https://github.com/zyron249/-zyronchain/pull/1167): between cycles the keeper watches `snapshotCache` in `/health`
+  and fetches a new build promptly, with the 10-minute cycle kept as a fallback. [#1170](https://github.com/zyron249/-zyronchain/pull/1170): caps on
+  watch-triggered cycles (at most one per 2 minutes) and on `/health` reads (64 KB). [#1171](https://github.com/zyron249/-zyronchain/pull/1171): the
+  keeper starts its next run itself through `workflow_dispatch` on main, so it no longer depends on
+  GitHub's schedule alone. [#1177](https://github.com/zyron249/-zyronchain/pull/1177), [#1179](https://github.com/zyron249/-zyronchain/pull/1179) and [#1181](https://github.com/zyron249/-zyronchain/pull/1181): the keeper detects rollbacks by
+  comparing the published tip hash with the live chain, records a rollback counter in the snapshot
+  label, and fails the run if a rollback stays unconfirmed.
+- **Not active yet.** A durable-lag alarm is proposed in [#1176](https://github.com/zyron249/-zyronchain/pull/1176) and [#1184](https://github.com/zyron249/-zyronchain/pull/1184) but is not merged,
+  so no lag alarm is active.
+
 ## Mempool: future-nonce transactions
 
 A transaction whose nonce leaves a gap above your confirmed nonce is held
