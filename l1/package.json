@@ -39,7 +39,7 @@
     "@libp2p/tcp": "11.0.29",
     "@multiformats/multiaddr": "13.0.3",
     "@noble/curves": "2.4.0",
-    "better-sqlite3": "13.0.3",
+    "better-sqlite3": "13.1.1",
     "libp2p": "3.3.12",
     "pg": "8.23.1"
   },
